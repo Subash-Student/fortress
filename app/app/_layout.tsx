@@ -4,8 +4,12 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as ScreenCapture from 'expo-screen-capture';
 import { useFonts } from 'expo-font';
+import * as SplashScreen from 'expo-splash-screen';
 import { useAuthStore } from '../src/store/authStore';
 import { useThemeStore } from '../src/store/themeStore';
+
+// Keep the native splash visible until we're ready
+SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
   const { isUnlocked } = useAuthStore();
@@ -21,15 +25,19 @@ export default function RootLayout() {
   }, []);
 
   useEffect(() => {
-    console.log('[DEBUG] RootLayout rendering, fontsLoaded:', fontsLoaded, 'fontError:', fontError);
-  }, [fontsLoaded, fontError]);
-
-  useEffect(() => {
     ScreenCapture.preventScreenCaptureAsync();
     return () => {
       ScreenCapture.allowScreenCaptureAsync();
     };
   }, []);
+
+  useEffect(() => {
+    const isReady = fontsLoaded || (fontError && fontError.message.includes('104'));
+    if (isReady) {
+      // Dismiss the native splash → our custom index.tsx screen shows instantly
+      SplashScreen.hideAsync();
+    }
+  }, [fontsLoaded, fontError]);
 
   const isReady = fontsLoaded || (fontError && fontError.message.includes('104'));
 
@@ -46,7 +54,7 @@ export default function RootLayout() {
           headerTintColor: '#FFFFFF',
           headerBackTitle: 'Back',
           contentStyle: { backgroundColor: '#000000' },
-          animation: 'slide_from_right',
+          animation: 'fade',
         }}
       >
         <Stack.Screen name="index" options={{ headerShown: false }} />
