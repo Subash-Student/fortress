@@ -1,31 +1,27 @@
 {
   "expo": {
-    "name": "Vault",
+    "name": "Fortress",
     "slug": "vault-password-manager",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
-    "userInterfaceStyle": "dark",
+    "icon": "./assets/fortress_logo.png",
+    "userInterfaceStyle": "automatic",
     "scheme": "vaultapp",
-    "splash": {
-      "backgroundColor": "#000000",
-      "resizeMode": "contain"
-    },
     "ios": {
       "bundleIdentifier": "com.anonymous.vaultpasswordmanager",
       "supportsTablet": false,
+      "icon": "./assets/fortress_logo_ios.png",
       "infoPlist": {
-        "NSFaceIDUsageDescription": "Vault uses Face ID to unlock your password vault."
+        "CFBundleDisplayName": "Fortress",
+        "NSFaceIDUsageDescription": "Fortress uses Face ID to unlock your password vault."
       }
     },
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#000000",
-        "foregroundImage": "./assets/icon.png"
+        "foregroundImage": "./assets/fortress_logo.png"
       },
       "permissions": [
-        "android.permission.USE_BIOMETRIC",
-        "android.permission.USE_FINGERPRINT",
         "android.permission.USE_BIOMETRIC",
         "android.permission.USE_FINGERPRINT"
       ],
@@ -35,9 +31,18 @@
       "expo-router",
       "expo-secure-store",
       [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#000000",
+          "image": "./assets/fortress_logo.png",
+          "imageWidth": 120,
+          "resizeMode": "contain"
+        }
+      ],
+      [
         "expo-local-authentication",
         {
-          "faceIDPermission": "Vault uses Face ID to unlock your password vault."
+          "faceIDPermission": "Fortress uses Face ID to unlock your password vault."
         }
       ],
       "expo-asset"
