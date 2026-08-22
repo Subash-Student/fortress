@@ -1,8 +1,8 @@
 import axios from 'axios';
 import * as SecureStore from 'expo-secure-store';
 
-const BASE_URL = "http://192.168.1.3:3000";
-// const BASE_URL = "https://fortress-peach.vercel.app";
+// const BASE_URL = "http://192.168.1.3:3000";
+const BASE_URL = "https://fortress-peach.vercel.app";
 
 const client = axios.create({
   baseURL: BASE_URL,
