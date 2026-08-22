@@ -13,7 +13,7 @@ router.get('/', async (req, res) => {
 
 // Create a bank account
 router.post('/', async (req, res) => {
-  const { nickname, bankName, last4, color } = req.body;
+  const { nickname, bankName, last4, color, purpose, targetAmount } = req.body;
   if (!nickname) return res.status(400).json({ error: 'Nickname is required' });
 
   try {
@@ -23,6 +23,8 @@ router.post('/', async (req, res) => {
       bankName: bankName || '',
       last4: last4 || '',
       color: color || '#3B82F6',
+      purpose: purpose || 'other',
+      targetAmount: targetAmount ?? null,
     });
     const saved = await newAccount.save();
     res.status(201).json(saved);
@@ -34,11 +36,11 @@ router.post('/', async (req, res) => {
 // Update a bank account
 router.put('/:id', async (req, res) => {
   const { id } = req.params;
-  const { nickname, bankName, last4, color } = req.body;
+  const { nickname, bankName, last4, color, purpose, targetAmount } = req.body;
   try {
     const updated = await BankAccount.findOneAndUpdate(
       { _id: id, userId: req.userId },
-      { nickname, bankName, last4, color },
+      { nickname, bankName, last4, color, purpose, targetAmount },
       { new: true }
     );
     if (!updated) return res.status(404).json({ error: 'Bank account not found' });

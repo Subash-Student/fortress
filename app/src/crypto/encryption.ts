@@ -39,6 +39,19 @@ export function decrypt(ciphertext: string, iv: string, key: string): string {
   return decrypted.toString(CryptoJS.enc.Utf8);
 }
 
+// Decrypts an {ciphertext, iv} field as stored on Link/Transaction/etc documents,
+// returning '' for a missing/null field or a failed decrypt instead of throwing —
+// shared by every screen that lists encrypted records (expenses, expense-dashboard).
+export function decryptField(field: EncryptedPayload | null | undefined, key: string | null): string {
+  if (!key || !field?.ciphertext) return '';
+  try {
+    return decrypt(field.ciphertext, field.iv, key);
+  } catch (err) {
+    console.error('Failed to decrypt field:', err);
+    return '';
+  }
+}
+
 export function generateKey(): string {
   return CryptoJS.lib.WordArray.random(32).toString(CryptoJS.enc.Hex);
 }

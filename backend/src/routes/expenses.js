@@ -35,6 +35,29 @@ router.get('/user-categories', async (req, res) => {
   }
 });
 
+// Get/set the fallback pay-cycle anchor day (used only until enough salary history exists to auto-detect cycles)
+router.get('/pay-cycle-anchor', async (req, res) => {
+  try {
+    const user = await User.findById(req.userId);
+    res.json({ payCycleAnchorDay: user?.settings?.payCycleAnchorDay ?? 1 });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch pay cycle anchor' });
+  }
+});
+
+router.put('/pay-cycle-anchor', async (req, res) => {
+  const { payCycleAnchorDay } = req.body;
+  if (!Number.isInteger(payCycleAnchorDay) || payCycleAnchorDay < 1 || payCycleAnchorDay > 31) {
+    return res.status(400).json({ error: 'payCycleAnchorDay must be an integer between 1 and 31' });
+  }
+  try {
+    await User.findByIdAndUpdate(req.userId, { $set: { 'settings.payCycleAnchorDay': payCycleAnchorDay } });
+    res.json({ payCycleAnchorDay });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update pay cycle anchor' });
+  }
+});
+
 // Get all transactions
 router.get('/', async (req, res) => {
   try {
@@ -74,6 +97,80 @@ router.post('/', async (req, res) => {
       return res.status(409).json({ error: 'Transaction already exists' });
     }
     res.status(500).json({ error: 'Failed to save transaction' });
+  }
+});
+
+// Bulk create/backfill transactions (used by the SMS sync pipeline).
+// Items with a sourceRef are upserted keyed on (userId, sourceRef): an existing
+// transaction only gets bankAccountId updated (e.g. backfilling a bank match on a
+// re-scan) without touching category/status the user may have already set; a new
+// sourceRef inserts the full document. This replaces a loop of N sequential POSTs
+// with a single bulkWrite.
+router.post('/bulk', async (req, res) => {
+  const { transactions } = req.body;
+  if (!Array.isArray(transactions) || transactions.length === 0) {
+    return res.status(400).json({ error: 'transactions array is required' });
+  }
+
+  const categoriesToSync = new Set();
+  const ops = transactions.map((t) => {
+    const { amount, counterparty, notes, type, category, bankAccountId, occurredAt, source, sourceRef } = t;
+    if (category) categoriesToSync.add(category);
+
+    if (sourceRef) {
+      return {
+        updateOne: {
+          filter: { userId: req.userId, sourceRef },
+          update: {
+            $set: { bankAccountId: bankAccountId || null },
+            $setOnInsert: {
+              userId: req.userId,
+              amount,
+              counterparty,
+              notes,
+              type,
+              category: category || null,
+              occurredAt,
+              source: source || 'sms',
+              sourceRef,
+              status: category ? 'categorized' : 'needs_review',
+            },
+          },
+          upsert: true,
+        },
+      };
+    }
+
+    return {
+      insertOne: {
+        document: {
+          userId: req.userId,
+          amount,
+          counterparty,
+          notes,
+          type,
+          category: category || null,
+          bankAccountId: bankAccountId || null,
+          occurredAt,
+          source: source || 'manual',
+          sourceRef: null,
+          status: category ? 'categorized' : 'needs_review',
+        },
+      },
+    };
+  });
+
+  try {
+    const result = await Transaction.bulkWrite(ops, { ordered: false });
+    for (const category of categoriesToSync) {
+      await syncUserCategory(req.userId, category);
+    }
+    res.json({
+      inserted: (result.insertedCount || 0) + (result.upsertedCount || 0),
+      updated: result.modifiedCount || 0,
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to bulk-save transactions' });
   }
 });
 

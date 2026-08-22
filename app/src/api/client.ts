@@ -81,10 +81,14 @@ export const expensesApi = {
   getTransactions: () => client.get('/expenses'),
   getUserCategories: () => client.get('/expenses/user-categories'),
   saveTransaction: (data: any) => client.post('/expenses', data),
+  saveTransactionsBulk: (transactions: any[]) => client.post('/expenses/bulk', { transactions }),
   updateTransaction: (id: string, data: any) => client.put(`/expenses/${id}`, data),
   updateCategory: (id: string, category: string | null, notes?: any) =>
     client.put(`/expenses/${id}/category`, { category, notes }),
   deleteTransaction: (id: string) => client.delete(`/expenses/${id}`),
+  getPayCycleAnchor: () => client.get('/expenses/pay-cycle-anchor'),
+  updatePayCycleAnchor: (payCycleAnchorDay: number) =>
+    client.put('/expenses/pay-cycle-anchor', { payCycleAnchorDay }),
 };
 
 // Bank Accounts API

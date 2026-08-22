@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, FlatList, TextInput, ActivityIndicator, Alert, Modal, KeyboardAvoidingView, Platform, Keyboard, TouchableWithoutFeedback, RefreshControl, ScrollView } from 'react-native';
+import { View, Text, TouchableOpacity, TextInput, ActivityIndicator, Alert, Modal, KeyboardAvoidingView, Platform, Keyboard, TouchableWithoutFeedback, RefreshControl, ScrollView } from 'react-native';
+import { FlashList } from '@shopify/flash-list';
+import { router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -7,7 +9,7 @@ import * as Haptics from 'expo-haptics';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useThemeStore } from '../src/store/themeStore';
 import { useAuthStore } from '../src/store/authStore';
-import { encrypt, decrypt } from '../src/crypto/encryption';
+import { encrypt, decryptField } from '../src/crypto/encryption';
 import HeaderBar from '../src/components/HeaderBar';
 import EmptyState from '../src/components/EmptyState';
 import { expensesApi, bankAccountsApi } from '../src/api/client';
@@ -85,26 +87,34 @@ export default function ExpensesScreen() {
   const [selectedBankAccountId, setSelectedBankAccountId] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
-  const decryptField = (field: any): string => {
-    if (!vaultKey || !field?.ciphertext) return '';
-    try {
-      return decrypt(field.ciphertext, field.iv, vaultKey);
-    } catch (err) {
-      console.error('Failed to decrypt field:', err);
-      return '';
-    }
-  };
+  // Decrypting is real CPU work (AES per field, 3 fields per transaction) — doing it
+  // for hundreds of transactions in one synchronous pass blocks the JS thread and
+  // freezes the UI. Decrypting in chunks with a yield in between keeps the app
+  // responsive, and updating state per chunk shows the first results almost
+  // immediately instead of waiting for everything to finish.
+  const DECRYPT_CHUNK_SIZE = 50;
 
   const fetchTransactions = async () => {
     try {
       const res = await expensesApi.getTransactions();
-      const decrypted = res.data.map((item: any) => ({
-        ...item,
-        amount: decryptField(item.amount),
-        counterparty: decryptField(item.counterparty),
-        notes: decryptField(item.notes),
-      }));
-      setTransactions(decrypted);
+      const rawItems = res.data;
+      let decrypted: TransactionItem[] = [];
+
+      for (let i = 0; i < rawItems.length; i += DECRYPT_CHUNK_SIZE) {
+        const batch = rawItems.slice(i, i + DECRYPT_CHUNK_SIZE).map((item: any) => ({
+          ...item,
+          amount: decryptField(item.amount, vaultKey),
+          counterparty: decryptField(item.counterparty, vaultKey),
+          notes: decryptField(item.notes, vaultKey),
+        }));
+        decrypted = [...decrypted, ...batch];
+        setTransactions(decrypted);
+        setIsLoading(false);
+
+        if (i + DECRYPT_CHUNK_SIZE < rawItems.length) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+      }
     } catch (err) {
       console.error('Failed to fetch transactions:', err);
     } finally {
@@ -557,6 +567,19 @@ export default function ExpensesScreen() {
               </View>
             )}
           </TouchableOpacity>
+
+          {/* Analysis Dashboard Button */}
+          <TouchableOpacity
+            className="w-12 h-12 rounded-xl border justify-center items-center ml-2"
+            style={{ backgroundColor: colors.surface, borderColor: colors.border }}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              router.push('/expense-dashboard');
+            }}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="stats-chart-outline" size={20} color={colors.textMuted} />
+          </TouchableOpacity>
         </View>
 
         {isLoading ? (
@@ -564,7 +587,7 @@ export default function ExpensesScreen() {
             <ActivityIndicator size="large" color={colors.accent} />
           </View>
         ) : (
-          <FlatList
+          <FlashList
             data={filteredTransactions}
             keyExtractor={(item) => item._id}
             renderItem={renderItem}

@@ -7,6 +7,7 @@ const UserSchema = new mongoose.Schema({
   settings: {
     linkTags: { type: [String], default: [] },
     expenseCategories: { type: [String], default: [] },
+    payCycleAnchorDay: { type: Number, default: 1 },
   },
 }, { timestamps: true });
 

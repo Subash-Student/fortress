@@ -4,10 +4,12 @@ import type { EventSubscription } from 'expo-modules-core';
 import ExpenseSmsReader, { RealtimeSmsEvent } from '../../modules/expense-sms-reader/src/ExpenseSmsReaderModule';
 import { parseMessage } from '../expense-parser';
 import { encrypt } from '../crypto/encryption';
-import { expensesApi } from '../api/client';
+import { expensesApi, bankAccountsApi } from '../api/client';
 
 const LAST_SYNCED_KEY = 'expense_sms_last_synced_at';
 const REVIEW_QUEUE_KEY = 'expense_sms_unparsed_queue';
+const REVIEW_QUEUE_MAX_ENTRIES = 500;
+const BULK_SYNC_BATCH_SIZE = 200;
 
 export interface UnparsedSmsEntry {
   id: string;
@@ -21,6 +23,12 @@ export interface SmsSyncResult {
   matched: number;
   unmatched: number;
   synced: number;
+}
+
+interface BankAccountRef {
+  _id: string;
+  nickname: string;
+  bankName?: string;
 }
 
 export function isSmsCaptureSupported(): boolean {
@@ -82,7 +90,12 @@ async function appendToUnparsedQueue(entries: UnparsedSmsEntry[]): Promise<void>
   const existing = await getUnparsedQueue();
   const existingIds = new Set(existing.map((e) => e.id));
   const merged = [...existing, ...entries.filter((e) => !existingIds.has(e.id))];
-  await AsyncStorage.setItem(REVIEW_QUEUE_KEY, JSON.stringify(merged));
+  // Cap to the most recent N — an unbounded queue slows down every read/write and
+  // isn't usable UX in the review modal anyway.
+  const capped = merged.length > REVIEW_QUEUE_MAX_ENTRIES
+    ? merged.slice(merged.length - REVIEW_QUEUE_MAX_ENTRIES)
+    : merged;
+  await AsyncStorage.setItem(REVIEW_QUEUE_KEY, JSON.stringify(capped));
 }
 
 export async function dismissUnparsedEntry(id: string): Promise<void> {
@@ -90,11 +103,46 @@ export async function dismissUnparsedEntry(id: string): Promise<void> {
   await AsyncStorage.setItem(REVIEW_QUEUE_KEY, JSON.stringify(existing.filter((e) => e.id !== id)));
 }
 
+async function fetchBankAccounts(): Promise<BankAccountRef[]> {
+  try {
+    const res = await bankAccountsApi.getBankAccounts();
+    return res.data || [];
+  } catch (err) {
+    console.error('Failed to fetch bank accounts for SMS matching:', err);
+    return [];
+  }
+}
+
+// Matches a parser's bankHint (e.g. "IDBI Bank", "HDFC Bank", "SBI") against the
+// user's bank accounts by a shared bank-code token in nickname/bankName. Simple
+// substring matching is sufficient since real nicknames are typically the bank code
+// itself (e.g. "HDFC", "SBI", "IDBI") rather than needing fuzzy matching.
+function resolveBankAccountId(bankHint: string | undefined, bankAccounts: BankAccountRef[]): string | null {
+  if (!bankHint) return null;
+  const token = bankHint.toUpperCase().split(/\s+/)[0];
+  const match = bankAccounts.find((acct) => {
+    const nickname = (acct.nickname || '').toUpperCase();
+    const bankName = (acct.bankName || '').toUpperCase();
+    return (nickname && nickname.includes(token)) || (bankName && bankName.includes(token));
+  });
+  return match ? match._id : null;
+}
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
 // Reads new SMS since the last sync (or the full inbox when fullHistory is true),
-// runs each message through the parser registry, and pushes matched transactions
+// runs each message through the parser registry, and bulk-pushes matched transactions
 // to the backend (encrypted client-side, category left null so they land in the
-// "Needs Review" inbox). Unmatched messages stay in a local-only queue — their
-// raw text never leaves the device.
+// "Needs Review" inbox). Unmatched messages stay in a local-only queue — their raw
+// text never leaves the device. Re-running this (e.g. after linking a new bank
+// account) backfills bankAccountId on already-synced transactions via the bulk
+// endpoint's upsert semantics, without disturbing categories already set.
 export async function syncSmsTransactions(vaultKey: string, fullHistory = false): Promise<SmsSyncResult> {
   if (!isSmsCaptureSupported()) {
     return { scanned: 0, matched: 0, unmatched: 0, synced: 0 };
@@ -106,11 +154,14 @@ export async function syncSmsTransactions(vaultKey: string, fullHistory = false)
   }
 
   const since = fullHistory ? 0 : await getLastSyncedAt();
-  const messages = await ExpenseSmsReader.readSmsInbox(since);
+  const [messages, bankAccounts] = await Promise.all([
+    ExpenseSmsReader.readSmsInbox(since),
+    fetchBankAccounts(),
+  ]);
 
   let matched = 0;
-  let synced = 0;
   const unparsed: UnparsedSmsEntry[] = [];
+  const payloads: any[] = [];
   let maxDate = since;
 
   for (const msg of messages) {
@@ -124,24 +175,26 @@ export async function syncSmsTransactions(vaultKey: string, fullHistory = false)
     }
 
     matched++;
+    payloads.push({
+      amount: encrypt(String(parsed.amount), vaultKey),
+      counterparty: encrypt(parsed.counterparty, vaultKey),
+      notes: encrypt('', vaultKey),
+      type: parsed.type,
+      category: null,
+      bankAccountId: resolveBankAccountId(parsed.bankHint, bankAccounts),
+      occurredAt: parsed.occurredAt.toISOString(),
+      source: 'sms',
+      sourceRef: `sms:${msg.id}`,
+    });
+  }
+
+  let synced = 0;
+  for (const batch of chunk(payloads, BULK_SYNC_BATCH_SIZE)) {
     try {
-      await expensesApi.saveTransaction({
-        amount: encrypt(String(parsed.amount), vaultKey),
-        counterparty: encrypt(parsed.counterparty, vaultKey),
-        notes: encrypt('', vaultKey),
-        type: parsed.type,
-        category: null,
-        bankAccountId: null,
-        occurredAt: parsed.occurredAt.toISOString(),
-        source: 'sms',
-        sourceRef: `sms:${msg.id}`,
-      });
-      synced++;
-    } catch (err: any) {
-      // A 409 means this SMS was already synced on a previous scan (unique sourceRef) — expected, not an error.
-      if (err?.response?.status !== 409) {
-        console.error('Failed to sync SMS transaction:', err);
-      }
+      const res = await expensesApi.saveTransactionsBulk(batch);
+      synced += (res.data?.inserted || 0) + (res.data?.updated || 0);
+    } catch (err) {
+      console.error('Failed to bulk-sync SMS transactions:', err);
     }
   }
 
@@ -162,13 +215,14 @@ async function handleRealtimeSms(event: RealtimeSmsEvent, vaultKey: string): Pro
   }
 
   try {
+    const bankAccounts = await fetchBankAccounts();
     await expensesApi.saveTransaction({
       amount: encrypt(String(parsed.amount), vaultKey),
       counterparty: encrypt(parsed.counterparty, vaultKey),
       notes: encrypt('', vaultKey),
       type: parsed.type,
       category: null,
-      bankAccountId: null,
+      bankAccountId: resolveBankAccountId(parsed.bankHint, bankAccounts),
       occurredAt: parsed.occurredAt.toISOString(),
       source: 'sms',
       sourceRef: `sms:rt:${event.date}:${hashText(event.body)}`,

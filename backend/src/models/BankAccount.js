@@ -22,6 +22,15 @@ const bankAccountSchema = new mongoose.Schema({
     type: String,
     default: '#3B82F6',
   },
+  purpose: {
+    type: String,
+    enum: ['monthly_expense', 'savings', 'bills_reserve', 'salary_source', 'other'],
+    default: 'other',
+  },
+  targetAmount: {
+    type: Number,
+    default: null,
+  },
 }, { timestamps: true });
 
 module.exports = mongoose.model('BankAccount', bankAccountSchema);
