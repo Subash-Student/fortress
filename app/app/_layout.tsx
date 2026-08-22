@@ -5,6 +5,8 @@ import { StatusBar } from 'expo-status-bar';
 import * as ScreenCapture from 'expo-screen-capture';
 import { useFonts } from 'expo-font';
 import * as SplashScreen from 'expo-splash-screen';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { queryClient } from '../src/query/queryClient';
 import { useAuthStore } from '../src/store/authStore';
 import { useThemeStore } from '../src/store/themeStore';
 
@@ -46,7 +48,7 @@ export default function RootLayout() {
   }
 
   return (
-    <>
+    <QueryClientProvider client={queryClient}>
       <StatusBar style={themeMode === 'dark' ? 'light' : 'dark'} />
       <Stack
         screenOptions={{
@@ -63,6 +65,6 @@ export default function RootLayout() {
         <Stack.Screen name="vault" options={{ title: 'Vault', headerShown: false }} />
         <Stack.Screen name="links" options={{ title: 'Links', headerShown: false }} />
       </Stack>
-    </>
+    </QueryClientProvider>
   );
 }

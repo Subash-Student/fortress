@@ -10,8 +10,16 @@ import {
   Image,
   KeyboardAvoidingView,
   Platform,
+  Keyboard,
   ActivityIndicator,
+  LayoutAnimation,
+  UIManager,
+  RefreshControl,
 } from 'react-native';
+
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
@@ -19,86 +27,22 @@ import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
 import { useThemeStore } from '../src/store/themeStore';
 import { useAuthStore } from '../src/store/authStore';
-import { encrypt, decrypt } from '../src/crypto/encryption';
-import { vaultApi } from '../src/api/client';
+import { encrypt } from '../src/crypto/encryption';
+import { useVaultPlatforms, useVaultMutations, VaultPlatform, CredentialAccount } from '../src/hooks/useVault';
 import HeaderBar from '../src/components/HeaderBar';
 import EmptyState from '../src/components/EmptyState';
 
-const VAULT_LOGO = 'https://cdn-icons-png.flaticon.com/512/1804/1804429.png';
-
-interface CredentialAccount {
-  id: string;
-  username: string;
-  password: string;
-  showPassword?: boolean;
-}
-
-interface VaultPlatform {
-  id: string;
-  name: string;
-  logo: string;
-  accounts: CredentialAccount[];
-}
+const VAULT_LOGO = require('../assets/module_logos/vault.png');
 
 export default function VaultScreen() {
   const { colors, fonts } = useThemeStore();
   const { vaultKey } = useAuthStore();
   const insets = useSafeAreaInsets();
 
-  // Loading state
-  const [loading, setLoading] = useState(true);
-
-  // Vault data lists
-  const [platforms, setPlatforms] = useState<VaultPlatform[]>([]);
+  // TanStack Query for instant cached data & background sync
+  const { data: platforms = [], isLoading: loading, isRefetching, refetch } = useVaultPlatforms();
+  const { savePlatform, updatePlatform, deletePlatform: deletePlatformApi, isSaving } = useVaultMutations();
   const [expandedPlatformId, setExpandedPlatformId] = useState<string | null>(null);
-
-  // Fetch passwords on load
-  useEffect(() => {
-    loadVaultData();
-  }, []);
-
-  const loadVaultData = async () => {
-    setLoading(true);
-    try {
-      const res = await vaultApi.getPlatforms();
-      const rawPlatforms = res.data || [];
-      
-      const decryptedPlatforms = rawPlatforms.map((plat: any) => {
-        return {
-          id: plat.id || plat._id,
-          name: plat.name,
-          logo: plat.logo,
-          accounts: (plat.accounts || []).map((acc: any) => {
-            let username = '';
-            let password = '';
-            
-            try {
-              if (vaultKey) {
-                username = decrypt(acc.username.ciphertext, acc.username.iv, vaultKey);
-                password = decrypt(acc.password.ciphertext, acc.password.iv, vaultKey);
-              }
-            } catch (err) {
-              console.error('Decryption failed for account', acc._id, err);
-            }
-            
-            return {
-              id: acc.id || acc._id,
-              username,
-              password,
-              showPassword: false,
-            };
-          }),
-        };
-      });
-
-      setPlatforms(decryptedPlatforms);
-    } catch (err) {
-      console.error('Failed to load vault data:', err);
-      Alert.alert('Load Error', 'Failed to retrieve your passwords from the vault.');
-    } finally {
-      setLoading(false);
-    }
-  };
 
   // Search Provider state
   const [searchProvider, setSearchProvider] = useState<'pixabay' | 'pexels'>('pixabay');
@@ -125,6 +69,26 @@ export default function VaultScreen() {
   // Image Search Suggestions
   const [imageSuggestions, setImageSuggestions] = useState<string[]>([]);
   const [loadingImages, setLoadingImages] = useState(false);
+
+  // Keyboard height tracking for Android with smooth LayoutAnimation
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  useEffect(() => {
+    const showSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      (e) => {
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+        setKeyboardHeight(e.endCoordinates.height);
+      }
+    );
+    const hideSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => {
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+        setKeyboardHeight(0);
+      }
+    );
+    return () => { showSub.remove(); hideSub.remove(); };
+  }, []);
 
   // Niagara UI States
   const [activeLetter, setActiveLetter] = useState<string | null>(null);
@@ -313,41 +277,23 @@ export default function VaultScreen() {
     });
 
     try {
-      let res;
       if (editingPlatformId) {
-        res = await vaultApi.updatePlatform(editingPlatformId, {
-          name: platformName.trim(),
-          logo: platformAvatar,
-          accounts: encryptedAccounts,
+        await updatePlatform({
+          id: editingPlatformId,
+          data: {
+            name: platformName.trim(),
+            logo: platformAvatar,
+            accounts: encryptedAccounts,
+          },
         });
       } else {
-        res = await vaultApi.savePlatform({
+        await savePlatform({
           name: platformName.trim(),
           logo: platformAvatar,
           accounts: encryptedAccounts,
         });
       }
 
-      // Decrypt the newly saved platform from backend response to match our local shape
-      const savedPlat = res.data;
-      const decryptedPlat: VaultPlatform = {
-        id: savedPlat.id || savedPlat._id,
-        name: savedPlat.name,
-        logo: savedPlat.logo,
-        accounts: (savedPlat.accounts || []).map((acc: any, index: number) => ({
-          id: acc.id || acc._id,
-          username: validAccounts[index].username,
-          password: validAccounts[index].password,
-          showPassword: false,
-        })),
-      };
-
-      setPlatforms((prev) => {
-        if (editingPlatformId) {
-          return prev.map(p => p.id === editingPlatformId ? decryptedPlat : p);
-        }
-        return [decryptedPlat, ...prev];
-      });
       setModalVisible(false);
       resetForm();
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -421,29 +367,10 @@ export default function VaultScreen() {
     setTimeout(() => setCopiedId(null), 1500);
   };
 
-  const togglePasswordVisibility = (platformId: string, accountId: string) => {
-    setPlatforms((prev) =>
-      prev.map((plat) => {
-        if (plat.id !== platformId) return plat;
-        return {
-          ...plat,
-          accounts: plat.accounts.map((acc) =>
-            acc.id === accountId ? { ...acc, showPassword: !acc.showPassword } : acc
-          ),
-        };
-      })
-    );
-    if (viewingPlatform && viewingPlatform.id === platformId) {
-      setViewingPlatform((prev) => {
-        if (!prev) return prev;
-        return {
-          ...prev,
-          accounts: prev.accounts.map((acc) => 
-            acc.id === accountId ? { ...acc, showPassword: !acc.showPassword } : acc
-          )
-        };
-      });
-    }
+  // Visible password tracking for viewing modal
+  const [visibleAccountIds, setVisibleAccountIds] = useState<{ [id: string]: boolean }>({});
+  const togglePasswordVisibility = (accountId: string) => {
+    setVisibleAccountIds((prev) => ({ ...prev, [accountId]: !prev[accountId] }));
   };
 
   const toggleModalPasswordVisibility = (idx: number) => {
@@ -462,8 +389,7 @@ export default function VaultScreen() {
         style: 'destructive',
         onPress: async () => {
           try {
-            await vaultApi.deletePlatform(id);
-            setPlatforms((prev) => prev.filter((plat) => plat.id !== id));
+            await deletePlatformApi(id);
             if (isFromModal) {
               setViewingPlatform(null);
             }
@@ -502,6 +428,14 @@ export default function VaultScreen() {
               className="flex-grow flex-shrink pr-4"
               contentContainerClassName="pt-4 pb-[100px]"
               showsVerticalScrollIndicator={false}
+              refreshControl={
+                <RefreshControl
+                  refreshing={isRefetching}
+                  onRefresh={refetch}
+                  tintColor={colors.accent}
+                  colors={[colors.accent]}
+                />
+              }
             >
               {Object.keys(groupedPlatforms).map((letter) => (
                 <View key={letter} className="mb-6">
@@ -648,11 +582,15 @@ export default function VaultScreen() {
             className="flex-1 bg-black/75 justify-end"
           >
             <View 
-              className="rounded-t-[32px] pt-4 px-6 max-h-[90%] shadow-2xl"
-              style={{ 
-                backgroundColor: colors.surface,
-                paddingBottom: Math.max(insets.bottom + 16, 24)
-              }}
+              className="rounded-t-[32px] pt-4 px-6 shadow-2xl"
+              style={[
+                { 
+                  maxHeight: '94%',
+                  backgroundColor: colors.surface,
+                  paddingBottom: Math.max(insets.bottom + 16, 24)
+                }, 
+                Platform.OS === 'android' && keyboardHeight > 0 && { maxHeight: '100%' }
+              ]}
             >
               {/* Sheet Drag Indicator Handle */}
               <View 
@@ -685,6 +623,7 @@ export default function VaultScreen() {
                 className="pt-5"
                 showsVerticalScrollIndicator={false}
                 keyboardShouldPersistTaps="handled"
+                contentContainerStyle={{ paddingBottom: Platform.OS === 'android' && keyboardHeight > 0 ? keyboardHeight : 20 }}
               >
                 {/* Platform Name Input */}
                 <View className="mb-5">
@@ -883,40 +822,38 @@ export default function VaultScreen() {
                   </View>
                 ))}
 
-                <View className="h-10" />
+                {/* Modal footer action buttons - inside ScrollView for Android keyboard */}
+                <View 
+                  className="flex-row gap-4 pt-5 border-t-[0.5px]"
+                  style={{ borderColor: colors.border }}
+                >
+                  <TouchableOpacity
+                    className="flex-1 border rounded-xl h-12 items-center justify-center"
+                    style={{ backgroundColor: 'transparent', borderColor: colors.border }}
+                    onPress={() => {
+                      setModalVisible(false);
+                      resetForm();
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <Text className="text-sm font-bold" style={{ color: colors.textMuted }}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    className="flex-1 rounded-xl h-12 items-center justify-center shadow-lg"
+                    style={{
+                      backgroundColor: colors.accent,
+                      shadowColor: colors.accent,
+                      shadowOffset: { width: 0, height: 4 },
+                      shadowOpacity: 0.3,
+                      shadowRadius: 8
+                    }}
+                    onPress={handleSaveToVault}
+                    activeOpacity={0.8}
+                  >
+                    <Text className="text-sm font-bold" style={{ color: '#FFFFFF' }}>{editingPlatformId ? 'Update Vault' : 'Save to Vault'}</Text>
+                  </TouchableOpacity>
+                </View>
               </ScrollView>
-
-              {/* Modal footer action buttons */}
-              <View 
-                className="flex-row gap-4 pt-5 border-t-[0.5px]"
-                style={{ borderColor: colors.border }}
-              >
-                <TouchableOpacity
-                  className="flex-1 border rounded-xl h-12 items-center justify-center"
-                  style={{ backgroundColor: 'transparent', borderColor: colors.border }}
-                  onPress={() => {
-                    setModalVisible(false);
-                    resetForm();
-                  }}
-                  activeOpacity={0.7}
-                >
-                  <Text className="text-sm font-bold" style={{ color: colors.textMuted }}>Cancel</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  className="flex-1 rounded-xl h-12 items-center justify-center shadow-lg"
-                  style={{
-                    backgroundColor: colors.accent,
-                    shadowColor: colors.accent,
-                    shadowOffset: { width: 0, height: 4 },
-                    shadowOpacity: 0.3,
-                    shadowRadius: 8
-                  }}
-                  onPress={handleSaveToVault}
-                  activeOpacity={0.8}
-                >
-                  <Text className="text-sm font-bold" style={{ color: '#FFFFFF' }}>{editingPlatformId ? 'Update Vault' : 'Save to Vault'}</Text>
-                </TouchableOpacity>
-              </View>
             </View>
           </KeyboardAvoidingView>
         </Modal>
@@ -986,10 +923,10 @@ export default function VaultScreen() {
                         <View className="flex-row items-center border rounded-xl px-4 h-12 shadow-sm" style={{ backgroundColor: colors.surface, borderColor: colors.border }}>
                           <Ionicons name="key-outline" size={18} color={colors.textMuted} className="mr-3" />
                           <Text className="flex-1 text-sm font-medium tracking-widest" numberOfLines={1} style={{ color: colors.text }}>
-                            {acc.showPassword ? acc.password : '••••••••••••'}
+                            {visibleAccountIds[acc.id] ? acc.password : '••••••••••••'}
                           </Text>
-                          <TouchableOpacity onPress={() => togglePasswordVisibility(viewingPlatform.id, acc.id)} className="p-1 mr-1">
-                            <Ionicons name={acc.showPassword ? 'eye-off-outline' : 'eye-outline'} size={20} color={colors.textMuted} />
+                          <TouchableOpacity onPress={() => togglePasswordVisibility(acc.id)} className="p-1 mr-1">
+                            <Ionicons name={visibleAccountIds[acc.id] ? 'eye-off-outline' : 'eye-outline'} size={20} color={colors.textMuted} />
                           </TouchableOpacity>
                           <TouchableOpacity onPress={() => copyToClipboard(acc.password, `pass-${acc.id}`)} className="p-1 border-l pl-3 border-gray-200/20">
                             <Ionicons name={copiedId === `pass-${acc.id}` ? "checkmark" : "copy-outline"} size={20} color={copiedId === `pass-${acc.id}` ? colors.success : colors.text} />

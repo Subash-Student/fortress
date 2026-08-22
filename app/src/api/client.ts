@@ -1,8 +1,8 @@
 import axios from 'axios';
 import * as SecureStore from 'expo-secure-store';
 
-// const BASE_URL = "http://192.168.1.3:3000";
-const BASE_URL = "https://fortress-peach.vercel.app";
+const BASE_URL = "http://192.168.1.3:3000";
+// const BASE_URL = "https://fortress-peach.vercel.app";
 
 const client = axios.create({
   baseURL: BASE_URL,
@@ -66,7 +66,7 @@ export const vaultApi = {
 
 // Links API
 export const linksApi = {
-  getLinks: () => client.get('/links'),
+  getLinks: (hidden: boolean = false) => client.get('/links', { params: { hidden: hidden ? 'true' : 'false' } }),
   getUserTags: () => client.get('/links/user-tags'),
   previewLink: (url: string) => client.post('/links/preview', { url }),
   saveLink: (data: any) => client.post('/links', data),
