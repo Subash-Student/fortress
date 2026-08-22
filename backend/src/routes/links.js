@@ -140,10 +140,11 @@ router.post('/preview', async (req, res) => {
   }
 });
 
-// Get all links
+// Get links (filtered by hidden status)
 router.get('/', async (req, res) => {
   try {
-    const links = await Link.find({ userId: req.userId }).sort({ createdAt: -1 });
+    const isHidden = req.query.hidden === 'true';
+    const links = await Link.find({ userId: req.userId, isHidden }).sort({ createdAt: -1 });
     res.json(links);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch links' });

@@ -1,54 +1,66 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { View, Text, TouchableOpacity, FlatList, Image, TextInput, ActivityIndicator, Alert, Modal, KeyboardAvoidingView, Platform, Keyboard, TouchableWithoutFeedback, Linking, RefreshControl, ScrollView } from 'react-native';
+import { View, Text, TouchableOpacity, FlatList, Image, TextInput, ActivityIndicator, Alert, Modal, KeyboardAvoidingView, Platform, Keyboard, TouchableWithoutFeedback, Linking, RefreshControl, ScrollView, LayoutAnimation, UIManager } from 'react-native';
+
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
+import { useFocusEffect } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useThemeStore } from '../src/store/themeStore';
 import { useAuthStore } from '../src/store/authStore';
-import { encrypt, decrypt } from '../src/crypto/encryption';
+import { encrypt } from '../src/crypto/encryption';
 import * as LocalAuthentication from 'expo-local-authentication';
 import HeaderBar from '../src/components/HeaderBar';
 import EmptyState from '../src/components/EmptyState';
 import { linksApi, authApi } from '../src/api/client';
+import { useLinksQuery, useLinkTagsQuery, useLinksMutations, LinkItem } from '../src/hooks/useLinks';
 
-const LINKS_LOGO = 'https://cdn-icons-png.flaticon.com/512/9872/9872434.png';
+const LINKS_LOGO = require('../assets/module_logos/links.png');
 const YOUTUBE_PLACEHOLDER = 'https://images.unsplash.com/photo-1611162617213-7d7a39e9b1d7?q=80&w=2874&auto=format&fit=crop';
-
-interface LinkItem {
-  _id: string;
-  url: string;
-  title: string;
-  thumbnail: string;
-  tags?: string[];
-  isFavorite: boolean;
-  isHidden: boolean;
-  createdAt: string;
-}
 
 export default function LinksScreen() {
   const { colors } = useThemeStore();
   const { vaultKey } = useAuthStore();
   const insets = useSafeAreaInsets();
-  const [links, setLinks] = useState<LinkItem[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+
+  // Hidden State Access - Defaults to locked (false)
+  const [showHidden, setShowHidden] = useState(false);
+  const [isPromptingBiometrics, setIsPromptingBiometrics] = useState(false);
+
+  // Auto-lock private hidden vault whenever user navigates away or presses Back
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        setShowHidden(false);
+      };
+    }, [])
+  );
+
+  // TanStack Query for instant cached links & tags
+  const { data: links = [], isLoading, isRefetching, refetch: refetchLinks } = useLinksQuery(showHidden);
+  const { data: availableTags = [], refetch: refetchTags } = useLinkTagsQuery();
+  const {
+    saveLink: saveLinkMutation,
+    updateLink: updateLinkMutation,
+    toggleFavorite: toggleFavoriteMutation,
+    toggleHide: toggleHideMutation,
+    deleteLink: deleteLinkMutation,
+    isSaving,
+  } = useLinksMutations();
 
   // Filter & Search State
   const [searchQuery, setSearchQuery] = useState('');
   const [filterFavorites, setFilterFavorites] = useState(false);
-  const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Tag Filter & Management State
-  const [availableTags, setAvailableTags] = useState<string[]>([]);
   const [selectedFilterTags, setSelectedFilterTags] = useState<string[]>([]);
   const [isFilterModalVisible, setIsFilterModalVisible] = useState(false);
 
   // Link Modal Tags State
   const [selectedModalTags, setSelectedModalTags] = useState<string[]>([]);
   const [tagInput, setTagInput] = useState('');
-
-  // Hidden State Access
-  const [showHidden, setShowHidden] = useState(false);
-  const [isPromptingBiometrics, setIsPromptingBiometrics] = useState(false);
 
   // 4-Digit Security PIN State
   const [pinModalVisible, setPinModalVisible] = useState(false);
@@ -65,57 +77,31 @@ export default function LinksScreen() {
   const [previewData, setPreviewData] = useState<{title: string, thumbnail: string} | null>(null);
   const [isFavorite, setIsFavorite] = useState(false);
   const [isHidden, setIsHidden] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
   const [editingLink, setEditingLink] = useState<LinkItem | null>(null);
 
-  const fetchLinks = async () => {
-    try {
-      const res = await linksApi.getLinks();
-      
-      const decryptedLinks = res.data.map((item: any) => {
-        if (!vaultKey) return item;
-        try {
-          return {
-            ...item,
-            url: item.url?.ciphertext ? decrypt(item.url.ciphertext, item.url.iv, vaultKey) : item.url,
-            title: item.title?.ciphertext ? decrypt(item.title.ciphertext, item.title.iv, vaultKey) : item.title,
-            thumbnail: item.thumbnail?.ciphertext ? decrypt(item.thumbnail.ciphertext, item.thumbnail.iv, vaultKey) : item.thumbnail,
-          };
-        } catch (err) {
-          console.error('Failed to decrypt link:', item._id, err);
-          return item;
-        }
-      });
-      
-      setLinks(decryptedLinks);
-    } catch (err) {
-      console.error('Failed to fetch links:', err);
-    } finally {
-      setIsLoading(false);
-    }
-  };
+  // Keyboard height tracking for Android with smooth LayoutAnimation
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  useEffect(() => {
+    const showSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      (e) => {
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+        setKeyboardHeight(e.endCoordinates.height);
+      }
+    );
+    const hideSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => {
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+        setKeyboardHeight(0);
+      }
+    );
+    return () => { showSub.remove(); hideSub.remove(); };
+  }, []);
 
   const handleRefresh = async () => {
-    setIsRefreshing(true);
-    await fetchLinks();
-    setIsRefreshing(false);
+    await Promise.all([refetchLinks(), refetchTags()]);
   };
-
-  const fetchUserTags = async () => {
-    try {
-      const res = await linksApi.getUserTags();
-      if (Array.isArray(res.data?.tags)) {
-        setAvailableTags(res.data.tags);
-      }
-    } catch (err) {
-      console.error('Failed to fetch user tags:', err);
-    }
-  };
-
-  useEffect(() => {
-    fetchLinks();
-    fetchUserTags();
-  }, []);
 
   // Debounce for URL preview
   useEffect(() => {
@@ -155,7 +141,7 @@ export default function LinksScreen() {
     setSelectedModalTags([]);
     setTagInput('');
     setModalVisible(true);
-    fetchUserTags();
+    refetchTags();
   };
 
   const handleOpenEditModal = (item: LinkItem) => {
@@ -169,7 +155,7 @@ export default function LinksScreen() {
     setSelectedModalTags(item.tags || []);
     setTagInput('');
     setModalVisible(true);
-    fetchUserTags();
+    refetchTags();
   };
 
   const handleCloseModal = () => {
@@ -189,9 +175,6 @@ export default function LinksScreen() {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       const updated = [...selectedModalTags, trimmed];
       setSelectedModalTags(updated);
-      if (!availableTags.includes(trimmed)) {
-        setAvailableTags([...availableTags, trimmed]);
-      }
     }
     setTagInput('');
   };
@@ -211,7 +194,6 @@ export default function LinksScreen() {
       return;
     }
 
-    setIsSaving(true);
     try {
       const encryptedUrl = encrypt(newUrl, vaultKey);
       const encryptedTitle = encrypt(customTitle, vaultKey);
@@ -219,17 +201,20 @@ export default function LinksScreen() {
 
       if (editingLink) {
         // Update existing link
-        await linksApi.updateLink(editingLink._id, {
-          url: encryptedUrl,
-          title: encryptedTitle,
-          thumbnail: encryptedThumbnail,
-          tags: selectedModalTags,
-          isFavorite,
-          isHidden,
+        await updateLinkMutation({
+          id: editingLink._id,
+          data: {
+            url: encryptedUrl,
+            title: encryptedTitle,
+            thumbnail: encryptedThumbnail,
+            tags: selectedModalTags,
+            isFavorite,
+            isHidden,
+          },
         });
       } else {
         // Create new link
-        await linksApi.saveLink({
+        await saveLinkMutation({
           url: encryptedUrl,
           title: encryptedTitle,
           thumbnail: encryptedThumbnail,
@@ -241,39 +226,25 @@ export default function LinksScreen() {
 
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       handleCloseModal();
-      fetchLinks();
-      fetchUserTags();
     } catch (err) {
       Alert.alert('Error', editingLink ? 'Failed to update link' : 'Failed to save link');
-    } finally {
-      setIsSaving(false);
     }
   };
 
   const toggleFavoriteItem = async (id: string, currentStatus: boolean) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    // Optimistic update
-    setLinks(links.map(l => l._id === id ? { ...l, isFavorite: !currentStatus } : l));
-    
     try {
-      await linksApi.toggleFavorite(id, !currentStatus);
+      await toggleFavoriteMutation({ id, isFavorite: !currentStatus });
     } catch (err) {
-      // Revert if failed
-      setLinks(links.map(l => l._id === id ? { ...l, isFavorite: currentStatus } : l));
       Alert.alert('Error', 'Could not update favorite status');
     }
   };
 
   const toggleHideItem = async (id: string, currentStatus: boolean) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    // Optimistic update
-    setLinks(links.map(l => l._id === id ? { ...l, isHidden: !currentStatus } : l));
-    
     try {
-      await linksApi.toggleHide(id, !currentStatus);
+      await toggleHideMutation({ id, isHidden: !currentStatus });
     } catch (err) {
-      // Revert
-      setLinks(links.map(l => l._id === id ? { ...l, isHidden: currentStatus } : l));
       Alert.alert('Error', 'Could not update hidden status');
     }
   };
@@ -286,8 +257,7 @@ export default function LinksScreen() {
         style: 'destructive',
         onPress: async () => {
           try {
-            await linksApi.deleteLink(id);
-            setLinks(links.filter(l => l._id !== id));
+            await deleteLinkMutation(id);
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           } catch (err) {
             Alert.alert('Error', 'Failed to delete');
@@ -389,7 +359,8 @@ export default function LinksScreen() {
           <Image 
             source={{ uri: item.thumbnail || YOUTUBE_PLACEHOLDER }}
             className="w-full h-56 rounded-xl"
-            resizeMode="cover"
+            resizeMode="contain"
+            style={{ backgroundColor: colors.surfaceHigh }}
           />
           <View className="flex-row justify-between items-start mt-3 px-2">
             <View className="flex-1 mr-3">
@@ -474,15 +445,20 @@ export default function LinksScreen() {
   };
 
   const filteredLinks = links.filter((link) => {
+    // STRICT ZERO-LEAK SECURITY FILTER:
+    // If showHidden is false, absolutely NO hidden links can ever be shown.
+    // If showHidden is true, only hidden links are shown.
+    const matchesHidden = showHidden ? link.isHidden === true : !link.isHidden;
+    if (!matchesHidden) return false;
+
     const matchesSearch = link.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
                           link.url.toLowerCase().includes(searchQuery.toLowerCase()) ||
                           (link.tags && link.tags.some(t => t.toLowerCase().includes(searchQuery.toLowerCase())));
     const matchesFav = filterFavorites ? link.isFavorite : true;
-    const matchesHidden = showHidden ? link.isHidden === true : link.isHidden !== true;
     const matchesTags = selectedFilterTags.length === 0 || 
                         (link.tags && link.tags.some(t => selectedFilterTags.includes(t)));
 
-    return matchesSearch && matchesFav && matchesHidden && matchesTags;
+    return matchesSearch && matchesFav && matchesTags;
   });
 
   return (
@@ -611,7 +587,7 @@ export default function LinksScreen() {
             alwaysBounceVertical={true}
             refreshControl={
               <RefreshControl
-                refreshing={isRefreshing}
+                refreshing={isRefetching}
                 onRefresh={handleRefresh}
                 tintColor={colors.accent}
                 colors={[colors.accent]}
@@ -664,16 +640,21 @@ export default function LinksScreen() {
           >
             <TouchableWithoutFeedback onPress={(e) => e.stopPropagation()}>
               <View 
-                className="rounded-t-3xl p-6 shadow-xl max-h-[88%]" 
-                style={{ 
-                  backgroundColor: colors.surface,
-                  paddingBottom: Math.max(insets.bottom + 16, 24)
-                }}
+                className="rounded-t-3xl p-6 shadow-xl" 
+                style={[
+                  { 
+                    maxHeight: '94%',
+                    backgroundColor: colors.surface,
+                    paddingBottom: Math.max(insets.bottom + 16, 24)
+                  },
+                  Platform.OS === 'android' && keyboardHeight > 0 && { maxHeight: '100%' }
+                ]}
               >
                 <ScrollView
                   keyboardShouldPersistTaps="handled"
                   showsVerticalScrollIndicator={false}
                   bounces={false}
+                  contentContainerStyle={{ paddingBottom: Platform.OS === 'android' && keyboardHeight > 0 ? keyboardHeight : 40 }}
                 >
                   <View className="flex-row justify-between items-center mb-6">
                     <Text className="text-xl font-semibold" style={{ color: colors.text }}>
@@ -714,7 +695,7 @@ export default function LinksScreen() {
                   {!isPreviewLoading && previewData && (
                     <View className="mb-4 rounded-xl overflow-hidden relative" style={{ backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border }}>
                       {previewData?.thumbnail ? (
-                        <Image source={{ uri: previewData.thumbnail }} className="w-full h-48" resizeMode="cover" />
+                        <Image source={{ uri: previewData.thumbnail }} className="w-full h-48" resizeMode="contain" style={{ backgroundColor: colors.surfaceHigh }} />
                       ) : (
                         <View className="w-full h-48 items-center justify-center" style={{ backgroundColor: colors.surfaceHigh }}>
                           <Ionicons name="image-outline" size={32} color={colors.textDim} />

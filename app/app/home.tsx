@@ -69,7 +69,7 @@ export default function HomeScreen() {
                     shadowRadius: 4
                   }}
                 >
-                  <Image source={{ uri: module.icon }} className="w-[34px] h-[34px] resize-contain" />
+                  <Image source={module.icon} className="w-[34px] h-[34px] resize-contain" />
                 </View>
                 <Text 
                   className="text-xs font-semibold tracking-[1px] text-center"
