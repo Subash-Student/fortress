@@ -6,6 +6,7 @@ const UserSchema = new mongoose.Schema({
   pinHash: { type: String, default: null },
   settings: {
     linkTags: { type: [String], default: [] },
+    expenseCategories: { type: [String], default: [] },
   },
 }, { timestamps: true });
 

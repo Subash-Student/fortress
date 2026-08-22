@@ -23,7 +23,9 @@
       },
       "permissions": [
         "android.permission.USE_BIOMETRIC",
-        "android.permission.USE_FINGERPRINT"
+        "android.permission.USE_FINGERPRINT",
+        "android.permission.READ_SMS",
+        "android.permission.RECEIVE_SMS"
       ],
       "package": "com.anonymous.vaultpasswordmanager"
     },
@@ -45,7 +47,8 @@
           "faceIDPermission": "Fortress uses Face ID to unlock your password vault."
         }
       ],
-      "expo-asset"
+      "expo-asset",
+      "@react-native-community/datetimepicker"
     ],
     "experiments": {
       "typedRoutes": true

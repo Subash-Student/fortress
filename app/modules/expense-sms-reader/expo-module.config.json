@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android", "web"],
+  "apple": {
+    "modules": ["ExpenseSmsReaderModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.expensesmsreader.ExpenseSmsReaderModule"]
+  }
+}

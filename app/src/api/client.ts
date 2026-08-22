@@ -1,8 +1,8 @@
 import axios from 'axios';
 import * as SecureStore from 'expo-secure-store';
 
-// const BASE_URL = "http://192.168.1.3:3000";
-const BASE_URL = "https://fortress-peach.vercel.app";
+const BASE_URL = "http://192.168.1.3:3000";
+// const BASE_URL = "https://fortress-peach.vercel.app";
 
 const client = axios.create({
   baseURL: BASE_URL,
@@ -74,4 +74,23 @@ export const linksApi = {
   toggleFavorite: (id: string, isFavorite: boolean) => client.put(`/links/${id}/favorite`, { isFavorite }),
   toggleHide: (id: string, isHidden: boolean) => client.put(`/links/${id}/hide`, { isHidden }),
   deleteLink: (id: string) => client.delete(`/links/${id}`),
+};
+
+// Expenses API
+export const expensesApi = {
+  getTransactions: () => client.get('/expenses'),
+  getUserCategories: () => client.get('/expenses/user-categories'),
+  saveTransaction: (data: any) => client.post('/expenses', data),
+  updateTransaction: (id: string, data: any) => client.put(`/expenses/${id}`, data),
+  updateCategory: (id: string, category: string | null, notes?: any) =>
+    client.put(`/expenses/${id}/category`, { category, notes }),
+  deleteTransaction: (id: string) => client.delete(`/expenses/${id}`),
+};
+
+// Bank Accounts API
+export const bankAccountsApi = {
+  getBankAccounts: () => client.get('/bank-accounts'),
+  saveBankAccount: (data: any) => client.post('/bank-accounts', data),
+  updateBankAccount: (id: string, data: any) => client.put(`/bank-accounts/${id}`, data),
+  deleteBankAccount: (id: string) => client.delete(`/bank-accounts/${id}`),
 };

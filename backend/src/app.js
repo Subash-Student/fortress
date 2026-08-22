@@ -30,6 +30,8 @@ const auth = require('./middleware/auth');
 app.use('/auth', require('./routes/auth'));
 app.use('/vault', auth, require('./routes/vault'));
 app.use('/links', auth, require('./routes/links'));
+app.use('/expenses', auth, require('./routes/expenses'));
+app.use('/bank-accounts', auth, require('./routes/bankAccounts'));
 
 const crypto = require('crypto');
 const User = require('./models/User');

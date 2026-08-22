@@ -7,12 +7,13 @@ import { useFonts } from 'expo-font';
 import * as SplashScreen from 'expo-splash-screen';
 import { useAuthStore } from '../src/store/authStore';
 import { useThemeStore } from '../src/store/themeStore';
+import { subscribeToRealtimeSms, drainPendingRealtimeSms } from '../src/services/smsCapture';
 
 // Keep the native splash visible until we're ready
 SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
-  const { isUnlocked } = useAuthStore();
+  const { isUnlocked, vaultKey } = useAuthStore();
   const { themeMode, loadTheme } = useThemeStore();
   const [fontsLoaded, fontError] = useFonts({
     'Orbitron-Bold': require('../assets/fonts/Orbitron-Bold.ttf'),
@@ -30,6 +31,15 @@ export default function RootLayout() {
       ScreenCapture.allowScreenCaptureAsync();
     };
   }, []);
+
+  useEffect(() => {
+    if (!vaultKey) return;
+    // Catch up on anything captured while the app was fully closed, then start
+    // listening for new SMS live for as long as the process stays alive.
+    drainPendingRealtimeSms(vaultKey);
+    const subscription = subscribeToRealtimeSms(vaultKey);
+    return () => subscription?.remove();
+  }, [vaultKey]);
 
   useEffect(() => {
     const isReady = fontsLoaded || (fontError && fontError.message.includes('104'));
@@ -62,6 +72,7 @@ export default function RootLayout() {
         <Stack.Screen name="home" options={{ headerShown: false }} />
         <Stack.Screen name="vault" options={{ title: 'Vault', headerShown: false }} />
         <Stack.Screen name="links" options={{ title: 'Links', headerShown: false }} />
+        <Stack.Screen name="expenses" options={{ title: 'Expenses', headerShown: false }} />
       </Stack>
     </>
   );

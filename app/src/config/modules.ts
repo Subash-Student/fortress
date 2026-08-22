@@ -23,4 +23,11 @@ export const MODULES: AppModule[] = [
     icon: 'https://cdn-icons-png.flaticon.com/512/9872/9872434.png',
     description: 'Encrypted personal bookmarks and links',
   },
+  {
+    id: 'expenses',
+    name: 'Expenses',
+    route: '/expenses',
+    icon: 'https://cdn-icons-png.flaticon.com/512/2830/2830284.png',
+    description: 'Track spending across your bank accounts',
+  },
 ];
