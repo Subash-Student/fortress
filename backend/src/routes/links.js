@@ -2,6 +2,32 @@ const router = require('express').Router();
 const axios = require('axios');
 const cheerio = require('cheerio');
 const Link = require('../models/Link');
+const User = require('../models/User');
+const auth = require('../middleware/auth');
+
+// Helper to save new unique tags to user.settings.linkTags
+async function syncUserTags(userId, tags) {
+  if (Array.isArray(tags) && tags.length > 0) {
+    const cleanTags = tags.map(t => String(t).trim()).filter(Boolean);
+    if (cleanTags.length > 0) {
+      await User.findByIdAndUpdate(
+        userId,
+        { $addToSet: { 'settings.linkTags': { $each: cleanTags } } },
+        { new: true }
+      );
+    }
+  }
+}
+
+// Get user saved link tags
+router.get('/user-tags', auth, async (req, res) => {
+  try {
+    const user = await User.findById(req.userId);
+    res.json({ tags: user?.settings?.linkTags || [] });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch tags' });
+  }
+});
 
 // ── Tier 1: Direct OG scrape from the target site ──
 async function scrapeDirectly(url) {
@@ -125,20 +151,23 @@ router.get('/', async (req, res) => {
 });
 
 // Save a link
-router.post('/', async (req, res) => {
-  const { url, title, thumbnail, isFavorite, isHidden } = req.body;
+router.post('/', auth, async (req, res) => {
+  const { url, title, thumbnail, isFavorite, isHidden, tags } = req.body;
   if (!url || !title) return res.status(400).json({ error: 'URL and title required' });
 
   try {
+    const cleanTags = Array.isArray(tags) ? tags.map(t => String(t).trim()).filter(Boolean) : [];
     const newLink = new Link({
       userId: req.userId,
       url,
       title,
       thumbnail,
+      tags: cleanTags,
       isFavorite: Boolean(isFavorite),
       isHidden: Boolean(isHidden),
     });
     const saved = await newLink.save();
+    await syncUserTags(req.userId, cleanTags);
     res.status(201).json(saved);
   } catch (err) {
     res.status(500).json({ error: 'Failed to save link' });
@@ -146,7 +175,7 @@ router.post('/', async (req, res) => {
 });
 
 // Toggle favorite
-router.put('/:id/favorite', async (req, res) => {
+router.put('/:id/favorite', auth, async (req, res) => {
   const { id } = req.params;
   const { isFavorite } = req.body;
   try {
@@ -163,7 +192,7 @@ router.put('/:id/favorite', async (req, res) => {
 });
 
 // Toggle hide
-router.put('/:id/hide', async (req, res) => {
+router.put('/:id/hide', auth, async (req, res) => {
   const { id } = req.params;
   const { isHidden } = req.body;
   try {
@@ -180,16 +209,18 @@ router.put('/:id/hide', async (req, res) => {
 });
 
 // Update link (edit)
-router.put('/:id', async (req, res) => {
+router.put('/:id', auth, async (req, res) => {
   const { id } = req.params;
-  const { url, title, thumbnail, isFavorite, isHidden } = req.body;
+  const { url, title, thumbnail, isFavorite, isHidden, tags } = req.body;
   try {
+    const cleanTags = Array.isArray(tags) ? tags.map(t => String(t).trim()).filter(Boolean) : [];
     const updated = await Link.findOneAndUpdate(
       { _id: id, userId: req.userId },
-      { url, title, thumbnail, isFavorite, isHidden },
+      { url, title, thumbnail, isFavorite, isHidden, tags: cleanTags },
       { new: true }
     );
     if (!updated) return res.status(404).json({ error: 'Link not found' });
+    await syncUserTags(req.userId, cleanTags);
     res.json(updated);
   } catch (err) {
     res.status(500).json({ error: 'Failed to update link' });

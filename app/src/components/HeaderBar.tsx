@@ -8,9 +8,10 @@ interface HeaderBarProps {
   title: string;
   logoUri?: string;
   showBackButton?: boolean;
+  onTitleLongPress?: () => void;
 }
 
-export default function HeaderBar({ title, logoUri, showBackButton = true }: HeaderBarProps) {
+export default function HeaderBar({ title, logoUri, showBackButton = true, onTitleLongPress }: HeaderBarProps) {
   const { colors, fonts, themeMode, toggleTheme } = useThemeStore();
 
   return (
@@ -28,15 +29,21 @@ export default function HeaderBar({ title, logoUri, showBackButton = true }: Hea
         <View className="w-9" />
       )}
 
-      <View className="flex-row items-center gap-2.5">
-        {logoUri && <Image source={{ uri: logoUri }} className="w-6 h-6 resize-contain" />}
-        <Text 
-          className="text-lg font-bold tracking-[1.5px]" 
-          style={{ fontFamily: fonts.brandBold, color: colors.text }}
-        >
-          {title}
-        </Text>
-      </View>
+      <TouchableOpacity
+        activeOpacity={0.85}
+        onLongPress={onTitleLongPress}
+        delayLongPress={500}
+      >
+        <View className="flex-row items-center gap-2.5">
+          {logoUri && <Image source={{ uri: logoUri }} className="w-6 h-6 resize-contain" />}
+          <Text 
+            className="text-lg font-bold tracking-[1.5px]" 
+            style={{ fontFamily: fonts.brandBold, color: colors.text }}
+          >
+            {title}
+          </Text>
+        </View>
+      </TouchableOpacity>
 
       <TouchableOpacity 
         className="w-9 h-9 rounded-lg border items-center justify-center" 

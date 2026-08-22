@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { View, Text, TouchableOpacity, FlatList, Image, TextInput, ActivityIndicator, Alert, Modal, KeyboardAvoidingView, Platform, Keyboard, TouchableWithoutFeedback, Linking } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { View, Text, TouchableOpacity, FlatList, Image, TextInput, ActivityIndicator, Alert, Modal, KeyboardAvoidingView, Platform, Keyboard, TouchableWithoutFeedback, Linking, RefreshControl, ScrollView } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useThemeStore } from '../src/store/themeStore';
@@ -9,7 +9,7 @@ import { encrypt, decrypt } from '../src/crypto/encryption';
 import * as LocalAuthentication from 'expo-local-authentication';
 import HeaderBar from '../src/components/HeaderBar';
 import EmptyState from '../src/components/EmptyState';
-import { linksApi } from '../src/api/client';
+import { linksApi, authApi } from '../src/api/client';
 
 const LINKS_LOGO = 'https://cdn-icons-png.flaticon.com/512/9872/9872434.png';
 const YOUTUBE_PLACEHOLDER = 'https://images.unsplash.com/photo-1611162617213-7d7a39e9b1d7?q=80&w=2874&auto=format&fit=crop';
@@ -19,6 +19,7 @@ interface LinkItem {
   url: string;
   title: string;
   thumbnail: string;
+  tags?: string[];
   isFavorite: boolean;
   isHidden: boolean;
   createdAt: string;
@@ -27,16 +28,34 @@ interface LinkItem {
 export default function LinksScreen() {
   const { colors } = useThemeStore();
   const { vaultKey } = useAuthStore();
+  const insets = useSafeAreaInsets();
   const [links, setLinks] = useState<LinkItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   // Filter & Search State
   const [searchQuery, setSearchQuery] = useState('');
   const [filterFavorites, setFilterFavorites] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  // Tag Filter & Management State
+  const [availableTags, setAvailableTags] = useState<string[]>([]);
+  const [selectedFilterTags, setSelectedFilterTags] = useState<string[]>([]);
+  const [isFilterModalVisible, setIsFilterModalVisible] = useState(false);
+
+  // Link Modal Tags State
+  const [selectedModalTags, setSelectedModalTags] = useState<string[]>([]);
+  const [tagInput, setTagInput] = useState('');
 
   // Hidden State Access
   const [showHidden, setShowHidden] = useState(false);
   const [isPromptingBiometrics, setIsPromptingBiometrics] = useState(false);
+
+  // 4-Digit Security PIN State
+  const [pinModalVisible, setPinModalVisible] = useState(false);
+  const [pinMode, setPinMode] = useState<'create' | 'verify'>('verify');
+  const [enteredPin, setEnteredPin] = useState('');
+  const [pinError, setPinError] = useState('');
+  const [isSubmittingPin, setIsSubmittingPin] = useState(false);
 
   // Modal State
   const [modalVisible, setModalVisible] = useState(false);
@@ -62,22 +81,40 @@ export default function LinksScreen() {
             title: item.title?.ciphertext ? decrypt(item.title.ciphertext, item.title.iv, vaultKey) : item.title,
             thumbnail: item.thumbnail?.ciphertext ? decrypt(item.thumbnail.ciphertext, item.thumbnail.iv, vaultKey) : item.thumbnail,
           };
-        } catch (e) {
-          console.error("Failed to decrypt link", item._id);
+        } catch (err) {
+          console.error('Failed to decrypt link:', item._id, err);
           return item;
         }
       });
-
+      
       setLinks(decryptedLinks);
-    } catch (error) {
-      console.error('Failed to load links', error);
+    } catch (err) {
+      console.error('Failed to fetch links:', err);
     } finally {
       setIsLoading(false);
     }
   };
 
+  const handleRefresh = async () => {
+    setIsRefreshing(true);
+    await fetchLinks();
+    setIsRefreshing(false);
+  };
+
+  const fetchUserTags = async () => {
+    try {
+      const res = await linksApi.getUserTags();
+      if (Array.isArray(res.data?.tags)) {
+        setAvailableTags(res.data.tags);
+      }
+    } catch (err) {
+      console.error('Failed to fetch user tags:', err);
+    }
+  };
+
   useEffect(() => {
     fetchLinks();
+    fetchUserTags();
   }, []);
 
   // Debounce for URL preview
@@ -115,7 +152,10 @@ export default function LinksScreen() {
     setPreviewData(null);
     setIsFavorite(false);
     setIsHidden(false);
+    setSelectedModalTags([]);
+    setTagInput('');
     setModalVisible(true);
+    fetchUserTags();
   };
 
   const handleOpenEditModal = (item: LinkItem) => {
@@ -126,7 +166,10 @@ export default function LinksScreen() {
     setPreviewData({ title: item.title, thumbnail: item.thumbnail });
     setIsFavorite(item.isFavorite);
     setIsHidden(item.isHidden);
+    setSelectedModalTags(item.tags || []);
+    setTagInput('');
     setModalVisible(true);
+    fetchUserTags();
   };
 
   const handleCloseModal = () => {
@@ -136,6 +179,26 @@ export default function LinksScreen() {
     setCustomTitle('');
     setPreviewData(null);
     setIsHidden(false);
+    setSelectedModalTags([]);
+    setTagInput('');
+  };
+
+  const handleAddTag = (tagToAdd: string) => {
+    const trimmed = tagToAdd.trim().replace(/^#/, '');
+    if (trimmed && !selectedModalTags.includes(trimmed)) {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      const updated = [...selectedModalTags, trimmed];
+      setSelectedModalTags(updated);
+      if (!availableTags.includes(trimmed)) {
+        setAvailableTags([...availableTags, trimmed]);
+      }
+    }
+    setTagInput('');
+  };
+
+  const handleRemoveTag = (tagToRemove: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setSelectedModalTags(selectedModalTags.filter(t => t !== tagToRemove));
   };
 
   const handleSave = async () => {
@@ -160,6 +223,7 @@ export default function LinksScreen() {
           url: encryptedUrl,
           title: encryptedTitle,
           thumbnail: encryptedThumbnail,
+          tags: selectedModalTags,
           isFavorite,
           isHidden,
         });
@@ -169,6 +233,7 @@ export default function LinksScreen() {
           url: encryptedUrl,
           title: encryptedTitle,
           thumbnail: encryptedThumbnail,
+          tags: selectedModalTags,
           isFavorite,
           isHidden,
         });
@@ -177,6 +242,7 @@ export default function LinksScreen() {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       handleCloseModal();
       fetchLinks();
+      fetchUserTags();
     } catch (err) {
       Alert.alert('Error', editingLink ? 'Failed to update link' : 'Failed to save link');
     } finally {
@@ -232,44 +298,63 @@ export default function LinksScreen() {
   };
 
   const triggerHiddenModeAuth = async () => {
+    setEnteredPin('');
+    setPinError('');
     try {
-      const hasHardware = await LocalAuthentication.hasHardwareAsync();
-      const isEnrolled = await LocalAuthentication.isEnrolledAsync();
+      const res = await authApi.getPinStatus();
+      setPinMode(res.data?.hasPin ? 'verify' : 'create');
+    } catch (_) {
+      setPinMode('create');
+    }
+    setPinModalVisible(true);
+  };
 
-      if (!hasHardware || !isEnrolled) {
-        Alert.alert(
-          'Private Vault',
-          'Biometrics not configured on this device. Authenticate directly?',
-          [
-            { text: 'Cancel', onPress: () => setIsPromptingBiometrics(false), style: 'cancel' },
-            { 
-              text: 'Unlock', 
-              onPress: () => {
-                setShowHidden(true);
-                setIsPromptingBiometrics(false);
-              } 
-            }
-          ]
-        );
-        return;
+  const handleKeyPress = (num: string) => {
+    if (enteredPin.length < 4) {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      const nextPin = enteredPin + num;
+      setEnteredPin(nextPin);
+      setPinError('');
+      if (nextPin.length === 4) {
+        submitPin(nextPin);
       }
+    }
+  };
 
-      const result = await LocalAuthentication.authenticateAsync({
-        promptMessage: 'Authenticate to view hidden links',
-        fallbackLabel: 'Use Passcode',
-        cancelLabel: 'Cancel',
-      });
+  const handleBackspace = () => {
+    if (enteredPin.length > 0) {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      setEnteredPin(enteredPin.slice(0, -1));
+      setPinError('');
+    }
+  };
 
-      if (result.success) {
+  const submitPin = async (pinValue: string) => {
+    setIsSubmittingPin(true);
+    try {
+      if (pinMode === 'create') {
+        await authApi.setPin(pinValue);
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        setPinModalVisible(false);
         setShowHidden(true);
+      } else {
+        const res = await authApi.verifyPin(pinValue);
+        if (res.data?.valid) {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          setPinModalVisible(false);
+          setShowHidden(true);
+        } else {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          setPinError(res.data?.error || 'Incorrect PIN');
+          setEnteredPin('');
+        }
       }
-    } catch (err) {
-      console.error('Biometric auth failed', err);
+    } catch (err: any) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      setPinError(err.response?.data?.error || 'Incorrect PIN. Try again.');
+      setEnteredPin('');
     } finally {
-      setTimeout(() => {
-        setIsPromptingBiometrics(false);
-      }, 1500);
+      setIsSubmittingPin(false);
     }
   };
 
@@ -322,6 +407,28 @@ export default function LinksScreen() {
               >
                 {domain} • {formattedDate}
               </Text>
+
+              {/* Link Tags Horizontal Scroll */}
+              {item.tags && item.tags.length > 0 && (
+                <ScrollView 
+                  horizontal 
+                  showsHorizontalScrollIndicator={false} 
+                  className="mt-2" 
+                  contentContainerStyle={{ gap: 6 }}
+                >
+                  {item.tags.map((tag, idx) => (
+                    <View 
+                      key={idx} 
+                      className="px-2.5 py-0.5 rounded-full border flex-row items-center" 
+                      style={{ backgroundColor: colors.surfaceHigh, borderColor: colors.border }}
+                    >
+                      <Text className="text-xs font-semibold" style={{ color: colors.accent }}>
+                        #{tag}
+                      </Text>
+                    </View>
+                  ))}
+                </ScrollView>
+              )}
             </View>
             
             <View className="flex-row items-center space-x-2">
@@ -368,28 +475,32 @@ export default function LinksScreen() {
 
   const filteredLinks = links.filter((link) => {
     const matchesSearch = link.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                          link.url.toLowerCase().includes(searchQuery.toLowerCase());
+                          link.url.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                          (link.tags && link.tags.some(t => t.toLowerCase().includes(searchQuery.toLowerCase())));
     const matchesFav = filterFavorites ? link.isFavorite : true;
     const matchesHidden = showHidden ? link.isHidden === true : link.isHidden !== true;
-    return matchesSearch && matchesFav && matchesHidden;
+    const matchesTags = selectedFilterTags.length === 0 || 
+                        (link.tags && link.tags.some(t => selectedFilterTags.includes(t)));
+
+    return matchesSearch && matchesFav && matchesHidden && matchesTags;
   });
 
   return (
     <SafeAreaView className="flex-1" style={{ backgroundColor: colors.bg }}>
       <View className="flex-1 px-4">
-        <HeaderBar title="Links" logoUri={LINKS_LOGO} />
+        <HeaderBar title="Links" logoUri={LINKS_LOGO} onTitleLongPress={triggerHiddenModeAuth} />
 
-        {/* Search and Favorite Filter Bar */}
+        {/* Search and Favorite / Tag Filter Bar */}
         <View className="flex-row items-center my-4">
           <View 
-            className="flex-1 flex-row items-center h-12 px-3 rounded-xl border mr-3" 
+            className="flex-1 flex-row items-center h-12 px-3 rounded-xl border mr-2" 
             style={{ backgroundColor: colors.surface, borderColor: colors.border }}
           >
             <Ionicons name="search" size={18} color={colors.textMuted} />
             <TextInput
               className="flex-1 ml-2 text-sm h-full"
               style={{ color: colors.text }}
-              placeholder="Search by title or URL..."
+              placeholder="Search title, URL, or #tag..."
               placeholderTextColor={colors.textDim}
               value={searchQuery}
               onChangeText={setSearchQuery}
@@ -403,8 +514,9 @@ export default function LinksScreen() {
             )}
           </View>
           
+          {/* Favorite Filter Toggle */}
           <TouchableOpacity
-            className="w-12 h-12 rounded-xl border justify-center items-center"
+            className="w-12 h-12 rounded-xl border justify-center items-center mr-2"
             style={{
               backgroundColor: filterFavorites ? colors.accentDim : colors.surface,
               borderColor: filterFavorites ? colors.accent : colors.border
@@ -420,6 +532,36 @@ export default function LinksScreen() {
               size={20}
               color={filterFavorites ? colors.accent : colors.textMuted}
             />
+          </TouchableOpacity>
+
+          {/* Tag Filter Button */}
+          <TouchableOpacity
+            className="w-12 h-12 rounded-xl border justify-center items-center relative"
+            style={{
+              backgroundColor: selectedFilterTags.length > 0 ? colors.accentDim : colors.surface,
+              borderColor: selectedFilterTags.length > 0 ? colors.accent : colors.border
+            }}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setIsFilterModalVisible(true);
+            }}
+            activeOpacity={0.7}
+          >
+            <Ionicons
+              name="options-outline"
+              size={20}
+              color={selectedFilterTags.length > 0 ? colors.accent : colors.textMuted}
+            />
+            {selectedFilterTags.length > 0 && (
+              <View 
+                className="absolute -top-1 -right-1 w-5 h-5 rounded-full items-center justify-center"
+                style={{ backgroundColor: colors.accent }}
+              >
+                <Text className="text-[10px] font-bold text-white">
+                  {selectedFilterTags.length}
+                </Text>
+              </View>
+            )}
           </TouchableOpacity>
         </View>
 
@@ -467,13 +609,21 @@ export default function LinksScreen() {
             scrollEventThrottle={16}
             bounces={true}
             alwaysBounceVertical={true}
+            refreshControl={
+              <RefreshControl
+                refreshing={isRefreshing}
+                onRefresh={handleRefresh}
+                tintColor={colors.accent}
+                colors={[colors.accent]}
+              />
+            }
             ListEmptyComponent={
               <View className="flex-1 items-center justify-center" style={{ minHeight: 400 }}>
                 <EmptyState
                   title={links.length === 0 ? "No saved links" : "No matches found"}
                   description={
                     links.length === 0
-                      ? "Pull down to reveal private links, or tap + to add one."
+                      ? "Long-press the header logo to access private links, or tap + to add one."
                       : "Try adjusting your search query or filters."
                   }
                 />
@@ -501,136 +651,477 @@ export default function LinksScreen() {
       </View>
 
       {/* Add Link Modal */}
-      <Modal visible={modalVisible} transparent animationType="slide">
-        <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-          <View className="flex-1 justify-end" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
-            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+      <Modal visible={modalVisible} transparent animationType="slide" onRequestClose={handleCloseModal}>
+        <KeyboardAvoidingView 
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined} 
+          className="flex-1"
+        >
+          <TouchableOpacity
+            activeOpacity={1}
+            onPress={Keyboard.dismiss}
+            className="flex-1 justify-end"
+            style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}
+          >
+            <TouchableWithoutFeedback onPress={(e) => e.stopPropagation()}>
               <View 
-                className="rounded-t-3xl p-6 shadow-xl" 
-                style={{ backgroundColor: colors.surface }}
+                className="rounded-t-3xl p-6 shadow-xl max-h-[88%]" 
+                style={{ 
+                  backgroundColor: colors.surface,
+                  paddingBottom: Math.max(insets.bottom + 16, 24)
+                }}
               >
-                <View className="flex-row justify-between items-center mb-6">
-                  <Text className="text-xl font-semibold" style={{ color: colors.text }}>
-                    {editingLink ? 'Edit Link' : 'Add New Link'}
-                  </Text>
-                  <TouchableOpacity onPress={handleCloseModal}>
-                    <Ionicons name="close" size={24} color={colors.textMuted} />
-                  </TouchableOpacity>
-                </View>
-
-                {/* URL Input */}
-                <View 
-                  className="px-4 py-3 rounded-xl border mb-4 flex-row items-center"
-                  style={{ backgroundColor: colors.bg, borderColor: colors.border }}
+                <ScrollView
+                  keyboardShouldPersistTaps="handled"
+                  showsVerticalScrollIndicator={false}
+                  bounces={false}
                 >
-                  <Ionicons name="link-outline" size={20} color={colors.textMuted} className="mr-3" />
-                  <TextInput
-                    className="flex-1 text-base ml-2"
-                    style={{ color: colors.text }}
-                    placeholder="Paste link here..."
-                    placeholderTextColor={colors.textDim}
-                    value={newUrl}
-                    onChangeText={setNewUrl}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    keyboardType="url"
-                  />
-                </View>
-
-                {/* Preview Section - Shows Thumbnail Only */}
-                {isPreviewLoading && (
-                  <View className="py-6 items-center">
-                    <ActivityIndicator color={colors.accent} />
-                    <Text className="mt-2 text-sm" style={{ color: colors.textMuted }}>Fetching preview...</Text>
-                  </View>
-                )}
-
-                {!isPreviewLoading && previewData && (
-                  <View className="mb-4 rounded-xl overflow-hidden relative" style={{ backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border }}>
-                    {previewData?.thumbnail ? (
-                      <Image source={{ uri: previewData.thumbnail }} className="w-full h-48" resizeMode="cover" />
-                    ) : (
-                      <View className="w-full h-48 items-center justify-center" style={{ backgroundColor: colors.surfaceHigh }}>
-                        <Ionicons name="image-outline" size={32} color={colors.textDim} />
-                      </View>
-                    )}
-                    {/* Eye toggle button absolute overlay */}
-                    <TouchableOpacity
-                      className="absolute top-3 left-3 w-10 h-10 rounded-full justify-center items-center"
-                      style={{ backgroundColor: 'rgba(0,0,0,0.6)' }}
-                      onPress={() => {
-                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                        setIsHidden(!isHidden);
-                      }}
-                      activeOpacity={0.7}
-                    >
-                      <Ionicons
-                        name={isHidden ? "eye-off" : "eye"}
-                        size={20}
-                        color={isHidden ? colors.danger : "#FFF"}
-                      />
+                  <View className="flex-row justify-between items-center mb-6">
+                    <Text className="text-xl font-semibold" style={{ color: colors.text }}>
+                      {editingLink ? 'Edit Link' : 'Add New Link'}
+                    </Text>
+                    <TouchableOpacity onPress={handleCloseModal}>
+                      <Ionicons name="close" size={24} color={colors.textMuted} />
                     </TouchableOpacity>
                   </View>
-                )}
 
-                {/* Separate Input for Title */}
-                {previewData && (
+                  {/* URL Input */}
+                  <View 
+                    className="px-4 py-3 rounded-xl border mb-4 flex-row items-center"
+                    style={{ backgroundColor: colors.bg, borderColor: colors.border }}
+                  >
+                    <Ionicons name="link-outline" size={20} color={colors.textMuted} className="mr-3" />
+                    <TextInput
+                      className="flex-1 text-base ml-2"
+                      style={{ color: colors.text }}
+                      placeholder="Paste link here..."
+                      placeholderTextColor={colors.textDim}
+                      value={newUrl}
+                      onChangeText={setNewUrl}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      keyboardType="url"
+                    />
+                  </View>
+
+                  {/* Preview Section - Shows Thumbnail Only */}
+                  {isPreviewLoading && (
+                    <View className="py-6 items-center">
+                      <ActivityIndicator color={colors.accent} />
+                      <Text className="mt-2 text-sm" style={{ color: colors.textMuted }}>Fetching preview...</Text>
+                    </View>
+                  )}
+
+                  {!isPreviewLoading && previewData && (
+                    <View className="mb-4 rounded-xl overflow-hidden relative" style={{ backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border }}>
+                      {previewData?.thumbnail ? (
+                        <Image source={{ uri: previewData.thumbnail }} className="w-full h-48" resizeMode="cover" />
+                      ) : (
+                        <View className="w-full h-48 items-center justify-center" style={{ backgroundColor: colors.surfaceHigh }}>
+                          <Ionicons name="image-outline" size={32} color={colors.textDim} />
+                        </View>
+                      )}
+                      {/* Eye toggle button absolute overlay */}
+                      <TouchableOpacity
+                        className="absolute top-3 left-3 w-10 h-10 rounded-full justify-center items-center"
+                        style={{ backgroundColor: 'rgba(0,0,0,0.6)' }}
+                        onPress={() => {
+                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                          setIsHidden(!isHidden);
+                        }}
+                        activeOpacity={0.7}
+                      >
+                        <Ionicons
+                          name={isHidden ? "eye-off" : "eye"}
+                          size={20}
+                          color={isHidden ? colors.danger : "#FFF"}
+                        />
+                      </TouchableOpacity>
+                    </View>
+                  )}
+
+                  {/* Separate Input for Title */}
+                  {previewData && (
+                    <View className="mb-4">
+                      <Text className="text-sm font-semibold mb-1 ml-1" style={{ color: colors.textMuted }}>
+                        Title
+                      </Text>
+                      <View 
+                        className="px-4 py-3 rounded-xl border flex-row items-center"
+                        style={{ backgroundColor: colors.bg, borderColor: colors.border }}
+                      >
+                        <TextInput
+                          className="flex-1 text-base"
+                          style={{ color: colors.text }}
+                          placeholder="Enter link title..."
+                          placeholderTextColor={colors.textDim}
+                          value={customTitle}
+                          onChangeText={setCustomTitle}
+                        />
+                      </View>
+                    </View>
+                  )}
+
+                  {/* Tags Input Section */}
                   <View className="mb-4">
                     <Text className="text-sm font-semibold mb-1 ml-1" style={{ color: colors.textMuted }}>
-                      Title
+                      Tags
                     </Text>
+                    
+                    {/* Selected Tags Chips */}
+                    {selectedModalTags.length > 0 && (
+                      <View className="flex-row flex-wrap mb-2" style={{ gap: 6 }}>
+                        {selectedModalTags.map((tag) => (
+                          <View 
+                            key={tag} 
+                            className="px-3 py-1.5 rounded-full flex-row items-center" 
+                            style={{ backgroundColor: colors.accentDim, borderWidth: 1, borderColor: colors.accent }}
+                          >
+                            <Text className="text-xs font-semibold mr-1" style={{ color: colors.accent }}>
+                              #{tag}
+                            </Text>
+                            <TouchableOpacity onPress={() => handleRemoveTag(tag)} className="p-0.5">
+                              <Ionicons name="close-circle" size={14} color={colors.accent} />
+                            </TouchableOpacity>
+                          </View>
+                        ))}
+                      </View>
+                    )}
+
+                    {/* Tag Input Field */}
                     <View 
-                      className="px-4 py-3 rounded-xl border flex-row items-center"
+                      className="px-4 py-2.5 rounded-xl border flex-row items-center"
                       style={{ backgroundColor: colors.bg, borderColor: colors.border }}
                     >
+                      <Ionicons name="pricetag-outline" size={18} color={colors.textMuted} className="mr-2" />
                       <TextInput
-                        className="flex-1 text-base"
+                        className="flex-1 text-base ml-2"
                         style={{ color: colors.text }}
-                        placeholder="Enter link title..."
+                        placeholder="Type tag (e.g. Design, Tech)..."
                         placeholderTextColor={colors.textDim}
-                        value={customTitle}
-                        onChangeText={setCustomTitle}
+                        value={tagInput}
+                        onChangeText={setTagInput}
+                        onSubmitEditing={() => handleAddTag(tagInput)}
+                        autoCapitalize="none"
+                        autoCorrect={false}
                       />
+                      {tagInput.trim().length > 0 && (
+                        <TouchableOpacity 
+                          className="px-3 py-1.5 rounded-lg"
+                          style={{ backgroundColor: colors.accent }}
+                          onPress={() => handleAddTag(tagInput)}
+                        >
+                          <Text className="text-xs font-bold text-white">+ Add</Text>
+                        </TouchableOpacity>
+                      )}
                     </View>
+
+                    {/* Saved Tags Dropdown Suggestions (Only shows tags not yet selected) */}
+                    {availableTags.filter(tag => !selectedModalTags.includes(tag)).length > 0 && (
+                      <View className="mt-2">
+                        <Text className="text-[11px] font-medium mb-1.5" style={{ color: colors.textMuted }}>
+                          Saved Tags (Tap to add):
+                        </Text>
+                        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
+                          {availableTags
+                            .filter(tag => !selectedModalTags.includes(tag))
+                            .map((tag) => (
+                              <TouchableOpacity
+                                key={tag}
+                                className="px-3 py-1 rounded-full border flex-row items-center"
+                                style={{
+                                  backgroundColor: colors.surface,
+                                  borderColor: colors.border,
+                                }}
+                                onPress={() => handleAddTag(tag)}
+                                activeOpacity={0.7}
+                              >
+                                <Text className="text-xs font-medium" style={{ color: colors.textMuted }}>
+                                  #{tag} +
+                                </Text>
+                              </TouchableOpacity>
+                            ))}
+                        </ScrollView>
+                      </View>
+                    )}
+                  </View>
+
+                  {/* Favorite Toggle */}
+                  <TouchableOpacity 
+                    className="flex-row justify-between items-center mb-8 px-2 py-2"
+                    onPress={() => setIsFavorite(!isFavorite)}
+                  >
+                    <Text className="text-base" style={{ color: colors.text }}>Mark as Favorite</Text>
+                    <Ionicons 
+                      name={isFavorite ? "heart" : "heart-outline"} 
+                      size={28} 
+                      color={isFavorite ? colors.danger : colors.textMuted} 
+                    />
+                  </TouchableOpacity>
+
+                  {/* Save Button */}
+                  <TouchableOpacity
+                    className="w-full py-4 rounded-2xl items-center justify-center flex-row mb-4"
+                    style={{ backgroundColor: (newUrl && customTitle) ? colors.accent : colors.surfaceHigh }}
+                    onPress={handleSave}
+                    disabled={!newUrl || !customTitle || isSaving}
+                  >
+                    {isSaving ? (
+                      <ActivityIndicator color="#FFFFFF" />
+                    ) : (
+                      <>
+                        <Ionicons name="checkmark" size={20} color={(newUrl && customTitle) ? '#FFFFFF' : colors.textMuted} style={{ marginRight: 6 }} />
+                        <Text className="text-base font-semibold" style={{ color: (newUrl && customTitle) ? '#FFFFFF' : colors.textMuted }}>
+                          {editingLink ? 'Update Link' : 'Save Link'}
+                        </Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+                </ScrollView>
+              </View>
+            </TouchableWithoutFeedback>
+          </TouchableOpacity>
+        </KeyboardAvoidingView>
+      </Modal>
+      {/* 4-Digit Security PIN Modal */}
+      <Modal
+        visible={pinModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setPinModalVisible(false)}
+      >
+        <View className="flex-1 justify-end" style={{ backgroundColor: 'rgba(0,0,0,0.7)' }}>
+          <View
+            className="rounded-t-3xl p-6 items-center"
+            style={{
+              backgroundColor: colors.surface,
+              paddingBottom: Math.max(insets.bottom + 16, 24),
+            }}
+          >
+            {/* Top Handle / Close */}
+            <View className="w-full flex-row justify-between items-center mb-4">
+              <View className="w-8" />
+              <View
+                className="w-10 h-1.5 rounded-full"
+                style={{ backgroundColor: colors.border }}
+              />
+              <TouchableOpacity onPress={() => setPinModalVisible(false)} className="p-1">
+                <Ionicons name="close" size={24} color={colors.textMuted} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Lock Icon */}
+            <View
+              className="w-16 h-16 rounded-full items-center justify-center mb-3 shadow-md"
+              style={{ backgroundColor: colors.accentDim }}
+            >
+              <Ionicons
+                name={pinMode === 'create' ? 'key-outline' : 'lock-closed-outline'}
+                size={32}
+                color={colors.accent}
+              />
+            </View>
+
+            {/* Title & Description */}
+            <Text className="text-xl font-bold mb-1" style={{ color: colors.text }}>
+              {pinMode === 'create' ? 'Set Security PIN' : 'Private Vault PIN'}
+            </Text>
+            <Text className="text-sm text-center mb-6 px-4" style={{ color: colors.textMuted }}>
+              {pinMode === 'create'
+                ? 'Choose a 4-digit PIN to secure your private hidden links.'
+                : 'Enter your 4-digit security PIN to unlock private links.'}
+            </Text>
+
+            {/* 4 PIN Dots */}
+            <View className="flex-row items-center justify-center mb-6" style={{ gap: 16 }}>
+              {[0, 1, 2, 3].map((idx) => {
+                const isFilled = enteredPin.length > idx;
+                return (
+                  <View
+                    key={idx}
+                    className="w-5 h-5 rounded-full items-center justify-center"
+                    style={{
+                      backgroundColor: isFilled ? colors.accent : 'transparent',
+                      borderWidth: isFilled ? 0 : 2,
+                      borderColor: isFilled ? colors.accent : colors.textMuted,
+                    }}
+                  />
+                );
+              })}
+            </View>
+
+            {/* Error Message */}
+            {!!pinError && (
+              <Text className="text-sm font-semibold mb-4 text-center" style={{ color: colors.danger }}>
+                {pinError}
+              </Text>
+            )}
+
+            {/* Loader */}
+            {isSubmittingPin ? (
+              <ActivityIndicator color={colors.accent} size="large" className="my-6" />
+            ) : (
+              /* Keypad Grid (1-9, 0, Backspace) */
+              <View className="w-full px-6">
+                {[
+                  ['1', '2', '3'],
+                  ['4', '5', '6'],
+                  ['7', '8', '9'],
+                  ['', '0', 'backspace'],
+                ].map((row, rIdx) => (
+                  <View key={rIdx} className="flex-row justify-around mb-4">
+                    {row.map((key, kIdx) => {
+                      if (key === '') {
+                        return <View key={kIdx} className="w-16 h-16" />;
+                      }
+                      if (key === 'backspace') {
+                        return (
+                          <TouchableOpacity
+                            key={kIdx}
+                            className="w-16 h-16 rounded-full items-center justify-center"
+                            onPress={handleBackspace}
+                            activeOpacity={0.7}
+                          >
+                            <Ionicons name="backspace-outline" size={24} color={colors.textMuted} />
+                          </TouchableOpacity>
+                        );
+                      }
+                      return (
+                        <TouchableOpacity
+                          key={kIdx}
+                          className="w-16 h-16 rounded-full items-center justify-center border"
+                          style={{
+                            backgroundColor: colors.surfaceHigh,
+                            borderColor: colors.border,
+                          }}
+                          onPress={() => handleKeyPress(key)}
+                          activeOpacity={0.7}
+                        >
+                          <Text className="text-2xl font-bold" style={{ color: colors.text }}>
+                            {key}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                ))}
+              </View>
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      {/* Tag Filter Bottom Sheet Modal */}
+      <Modal
+        visible={isFilterModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setIsFilterModalVisible(false)}
+      >
+        <TouchableOpacity
+          activeOpacity={1}
+          onPress={() => setIsFilterModalVisible(false)}
+          className="flex-1 justify-end"
+          style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}
+        >
+          <TouchableWithoutFeedback onPress={(e) => e.stopPropagation()}>
+            <View 
+              className="rounded-t-3xl p-6 shadow-xl max-h-[85%]" 
+              style={{ 
+                backgroundColor: colors.surface,
+                paddingBottom: Math.max(insets.bottom + 16, 24)
+              }}
+            >
+              {/* Drag Handle Notch */}
+              <View className="w-12 h-1 rounded-full self-center mb-4 opacity-40" style={{ backgroundColor: colors.textMuted }} />
+
+              {/* Header */}
+              <View className="flex-row justify-between items-center mb-4 pb-3 border-b" style={{ borderColor: colors.border }}>
+                <View className="flex-row items-center" style={{ gap: 8 }}>
+                  <Ionicons name="funnel-outline" size={20} color={colors.accent} />
+                  <Text className="text-lg font-bold" style={{ color: colors.text }}>
+                    Filter by Tags
+                  </Text>
+                </View>
+                <View className="flex-row items-center" style={{ gap: 12 }}>
+                  {selectedFilterTags.length > 0 && (
+                    <TouchableOpacity 
+                      onPress={() => {
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        setSelectedFilterTags([]);
+                      }}
+                    >
+                      <Text className="text-xs font-bold" style={{ color: colors.danger }}>
+                        Clear All
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                  <TouchableOpacity onPress={() => setIsFilterModalVisible(false)} className="p-1">
+                    <Ionicons name="close" size={22} color={colors.textMuted} />
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              {/* Tags Multi-select Grid */}
+              <ScrollView showsVerticalScrollIndicator={false} className="py-2 max-h-[350px]">
+                {availableTags.length === 0 ? (
+                  <View className="py-8 items-center">
+                    <Ionicons name="pricetags-outline" size={32} color={colors.textDim} />
+                    <Text className="text-sm text-center mt-2" style={{ color: colors.textMuted }}>
+                      No saved tags yet. Add tags when creating or editing links!
+                    </Text>
+                  </View>
+                ) : (
+                  <View className="flex-row flex-wrap" style={{ gap: 10 }}>
+                    {availableTags.map((tag) => {
+                      const isSelected = selectedFilterTags.includes(tag);
+                      return (
+                        <TouchableOpacity
+                          key={tag}
+                          className="px-4 py-2.5 rounded-full border flex-row items-center"
+                          style={{
+                            backgroundColor: isSelected ? colors.accent : colors.bg,
+                            borderColor: isSelected ? colors.accent : colors.border,
+                          }}
+                          onPress={() => {
+                            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                            if (isSelected) {
+                              setSelectedFilterTags(selectedFilterTags.filter(t => t !== tag));
+                            } else {
+                              setSelectedFilterTags([...selectedFilterTags, tag]);
+                            }
+                          }}
+                          activeOpacity={0.7}
+                        >
+                          <Text 
+                            className="text-sm font-semibold" 
+                            style={{ color: isSelected ? '#FFFFFF' : colors.text }}
+                          >
+                            #{tag}
+                          </Text>
+                          {isSelected && (
+                            <Ionicons name="checkmark-circle" size={16} color="#FFFFFF" style={{ marginLeft: 6 }} />
+                          )}
+                        </TouchableOpacity>
+                      );
+                    })}
                   </View>
                 )}
+              </ScrollView>
 
-                {/* Favorite Toggle */}
-                <TouchableOpacity 
-                  className="flex-row justify-between items-center mb-8 px-2 py-2"
-                  onPress={() => setIsFavorite(!isFavorite)}
-                >
-                  <Text className="text-base" style={{ color: colors.text }}>Mark as Favorite</Text>
-                  <Ionicons 
-                    name={isFavorite ? "heart" : "heart-outline"} 
-                    size={28} 
-                    color={isFavorite ? colors.danger : colors.textMuted} 
-                  />
-                </TouchableOpacity>
-
-                {/* Save Button */}
-                <TouchableOpacity
-                  className="w-full py-4 rounded-2xl items-center justify-center flex-row"
-                  style={{ backgroundColor: (newUrl && customTitle) ? colors.accent : colors.surfaceHigh }}
-                  onPress={handleSave}
-                  disabled={!newUrl || !customTitle || isSaving}
-                >
-                  {isSaving ? (
-                    <ActivityIndicator color="#FFFFFF" />
-                  ) : (
-                    <>
-                      <Ionicons name="checkmark" size={20} color={(newUrl && customTitle) ? '#FFFFFF' : colors.textMuted} style={{ marginRight: 6 }} />
-                      <Text className="text-base font-semibold" style={{ color: (newUrl && customTitle) ? '#FFFFFF' : colors.textMuted }}>
-                        {editingLink ? 'Update Link' : 'Save Link'}
-                      </Text>
-                    </>
-                  )}
-                </TouchableOpacity>
-                <View className="h-6" /> 
-              </View>
-            </KeyboardAvoidingView>
-          </View>
-        </TouchableWithoutFeedback>
+              {/* Apply Action Button */}
+              <TouchableOpacity
+                className="w-full py-3.5 rounded-xl items-center justify-center mt-4"
+                style={{ backgroundColor: colors.accent }}
+                onPress={() => setIsFilterModalVisible(false)}
+                activeOpacity={0.85}
+              >
+                <Text className="text-base font-semibold text-white">
+                  Apply Filters ({selectedFilterTags.length})
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableWithoutFeedback>
+        </TouchableOpacity>
       </Modal>
     </SafeAreaView>
   );
