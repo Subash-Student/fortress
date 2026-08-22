@@ -12,7 +12,7 @@ import {
   Platform,
   ActivityIndicator,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
@@ -43,6 +43,7 @@ interface VaultPlatform {
 export default function VaultScreen() {
   const { colors, fonts } = useThemeStore();
   const { vaultKey } = useAuthStore();
+  const insets = useSafeAreaInsets();
 
   // Loading state
   const [loading, setLoading] = useState(true);
@@ -643,12 +644,15 @@ export default function VaultScreen() {
           onRequestClose={() => setModalVisible(false)}
         >
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
             className="flex-1 bg-black/75 justify-end"
           >
             <View 
-              className="rounded-t-[32px] pt-4 px-6 pb-8 max-h-[90%] shadow-2xl"
-              style={{ backgroundColor: colors.surface }}
+              className="rounded-t-[32px] pt-4 px-6 max-h-[90%] shadow-2xl"
+              style={{ 
+                backgroundColor: colors.surface,
+                paddingBottom: Math.max(insets.bottom + 16, 24)
+              }}
             >
               {/* Sheet Drag Indicator Handle */}
               <View 
@@ -926,8 +930,11 @@ export default function VaultScreen() {
         >
           <View className="flex-1 bg-black/75 justify-end">
             <View 
-              className="rounded-t-[32px] pt-4 px-6 pb-8 max-h-[90%] shadow-2xl"
-              style={{ backgroundColor: colors.surface }}
+              className="rounded-t-[32px] pt-4 px-6 max-h-[90%] shadow-2xl"
+              style={{ 
+                backgroundColor: colors.surface,
+                paddingBottom: Math.max(insets.bottom + 16, 24)
+              }}
             >
               {/* Drag Handle */}
               <View 

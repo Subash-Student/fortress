@@ -23,6 +23,10 @@ const linkSchema = new mongoose.Schema({
     type: EncryptedFieldSchema,
     required: false,
   },
+  tags: {
+    type: [String],
+    default: [],
+  },
   isFavorite: {
     type: Boolean,
     default: false,
