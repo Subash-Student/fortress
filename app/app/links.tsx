@@ -493,22 +493,57 @@ export default function LinksScreen() {
     if (isProcessing) {
       return (
         <View className="mb-6 rounded-2xl border overflow-hidden" style={{ backgroundColor: colors.surface, borderColor: colors.border }}>
-          <View className="w-full h-44 items-center justify-center relative" style={{ backgroundColor: colors.surfaceHigh }}>
-            <ActivityIndicator size="small" color={colors.accent} />
-            <View className="flex-row items-center mt-3 px-3 py-1 rounded-full border" style={{ backgroundColor: colors.accentDim, borderColor: colors.accent }}>
-              <Ionicons name="sparkles" size={13} color={colors.accent} />
-              <Text className="text-xs font-semibold ml-1.5" style={{ color: colors.accent }}>
-                Auto-tagging & fetching preview...
+          <TouchableOpacity 
+            activeOpacity={0.8}
+            onPress={() => Linking.openURL(item.url)}
+          >
+            <View className="w-full h-44 items-center justify-center relative" style={{ backgroundColor: colors.surfaceHigh }}>
+              <ActivityIndicator size="small" color={colors.accent} />
+              <View className="flex-row items-center mt-3 px-3 py-1 rounded-full border" style={{ backgroundColor: colors.accentDim, borderColor: colors.accent }}>
+                <Ionicons name="sparkles" size={13} color={colors.accent} />
+                <Text className="text-xs font-semibold ml-1.5" style={{ color: colors.accent }}>
+                  Auto-tagging & fetching preview...
+                </Text>
+              </View>
+            </View>
+          </TouchableOpacity>
+          <View className="p-3 flex-row justify-between items-center">
+            <View className="flex-1 mr-3">
+              <Text className="text-sm font-semibold" style={{ color: colors.text }} numberOfLines={1}>
+                {domain}
+              </Text>
+              <Text className="text-xs mt-0.5" style={{ color: colors.textMuted }} numberOfLines={1}>
+                {item.url}
               </Text>
             </View>
-          </View>
-          <View className="p-3">
-            <Text className="text-sm font-semibold" style={{ color: colors.text }} numberOfLines={1}>
-              {domain}
-            </Text>
-            <Text className="text-xs mt-1" style={{ color: colors.textMuted }} numberOfLines={1}>
-              {item.url}
-            </Text>
+            <View className="flex-row items-center space-x-1">
+              <TouchableOpacity
+                onPress={() => toggleHideItem(item._id, item.isHidden)}
+                className="p-2"
+              >
+                <Ionicons
+                  name={item.isHidden ? "eye-off-outline" : "eye-outline"}
+                  size={20}
+                  color={item.isHidden ? colors.accent : colors.textMuted}
+                />
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => toggleFavoriteItem(item._id, item.isFavorite)}
+                className="p-2"
+              >
+                <Ionicons
+                  name={item.isFavorite ? "heart" : "heart-outline"}
+                  size={20}
+                  color={item.isFavorite ? colors.danger : colors.textMuted}
+                />
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => handleDelete(item._id)}
+                className="p-2"
+              >
+                <Ionicons name="trash-outline" size={20} color={colors.textMuted} />
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       );
@@ -544,19 +579,17 @@ export default function LinksScreen() {
               </Text>
             </View>
             
-            <View className="flex-row items-center space-x-2">
-              {showHidden && (
-                <TouchableOpacity
-                  onPress={() => toggleHideItem(item._id, item.isHidden)}
-                  className="p-2"
-                >
-                  <Ionicons
-                    name={item.isHidden ? "eye-off-outline" : "eye-outline"}
-                    size={22}
-                    color={colors.textMuted}
-                  />
-                </TouchableOpacity>
-              )}
+            <View className="flex-row items-center space-x-1">
+              <TouchableOpacity
+                onPress={() => toggleHideItem(item._id, item.isHidden)}
+                className="p-2"
+              >
+                <Ionicons
+                  name={item.isHidden ? "eye-off-outline" : "eye-outline"}
+                  size={22}
+                  color={item.isHidden ? colors.accent : colors.textMuted}
+                />
+              </TouchableOpacity>
               <TouchableOpacity
                 onPress={() => toggleFavoriteItem(item._id, item.isFavorite)}
                 className="p-2"
@@ -943,7 +976,7 @@ export default function LinksScreen() {
                   )}
 
                   {!isPreviewLoading && previewData && (
-                    <View className="mb-4 rounded-2xl overflow-hidden relative border" style={{ backgroundColor: colors.surfaceHigh, borderColor: colors.border }}>
+                    <View className="mb-4 rounded-2xl overflow-hidden border" style={{ backgroundColor: colors.surfaceHigh, borderColor: colors.border }}>
                       {previewData?.thumbnail ? (
                         <Image 
                           source={{ uri: previewData.thumbnail }} 
@@ -956,22 +989,6 @@ export default function LinksScreen() {
                           <Text className="mt-2 text-xs" style={{ color: colors.textDim }}>No preview image available</Text>
                         </View>
                       )}
-                      {/* Eye toggle button absolute overlay */}
-                      <TouchableOpacity
-                        className="absolute top-3 left-3 w-10 h-10 rounded-full justify-center items-center shadow-md"
-                        style={{ backgroundColor: 'rgba(0,0,0,0.65)' }}
-                        onPress={() => {
-                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                          setIsHidden(!isHidden);
-                        }}
-                        activeOpacity={0.7}
-                      >
-                        <Ionicons
-                          name={isHidden ? "eye-off" : "eye"}
-                          size={20}
-                          color={isHidden ? colors.danger : "#FFF"}
-                        />
-                      </TouchableOpacity>
                     </View>
                   )}
 
@@ -1079,15 +1096,67 @@ export default function LinksScreen() {
                     )}
                   </View>
 
+                  {/* Dedicated Private Vault (Hidden) Toggle Row */}
+                  <TouchableOpacity 
+                    className="flex-row justify-between items-center mb-3 px-4 py-3.5 rounded-2xl border"
+                    style={{ 
+                      backgroundColor: isHidden ? colors.accentDim : colors.bg,
+                      borderColor: isHidden ? colors.accent : colors.border
+                    }}
+                    onPress={() => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      setIsHidden(!isHidden);
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <View className="flex-row items-center" style={{ gap: 10 }}>
+                      <Ionicons 
+                        name={isHidden ? "eye-off" : "eye-outline"} 
+                        size={22} 
+                        color={isHidden ? colors.accent : colors.textMuted} 
+                      />
+                      <View>
+                        <Text className="text-sm font-semibold" style={{ color: isHidden ? colors.accent : colors.text }}>
+                          {isHidden ? "Hide in Private Vault" : "Public Link (Normal List)"}
+                        </Text>
+                        <Text className="text-xs" style={{ color: colors.textMuted }}>
+                          {isHidden ? "Requires PIN & hidden from main list" : "Visible on main links dashboard"}
+                        </Text>
+                      </View>
+                    </View>
+                    <Ionicons 
+                      name={isHidden ? "checkbox" : "square-outline"} 
+                      size={24} 
+                      color={isHidden ? colors.accent : colors.textMuted} 
+                    />
+                  </TouchableOpacity>
+
                   {/* Favorite Toggle */}
                   <TouchableOpacity 
-                    className="flex-row justify-between items-center mb-8 px-2 py-2"
-                    onPress={() => setIsFavorite(!isFavorite)}
+                    className="flex-row justify-between items-center mb-6 px-4 py-3 rounded-2xl border"
+                    style={{ 
+                      backgroundColor: isFavorite ? colors.accentDim : colors.bg,
+                      borderColor: isFavorite ? colors.danger : colors.border
+                    }}
+                    onPress={() => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      setIsFavorite(!isFavorite);
+                    }}
+                    activeOpacity={0.7}
                   >
-                    <Text className="text-base" style={{ color: colors.text }}>Mark as Favorite</Text>
+                    <View className="flex-row items-center" style={{ gap: 10 }}>
+                      <Ionicons 
+                        name={isFavorite ? "heart" : "heart-outline"} 
+                        size={22} 
+                        color={isFavorite ? colors.danger : colors.textMuted} 
+                      />
+                      <Text className="text-sm font-semibold" style={{ color: isFavorite ? colors.danger : colors.text }}>
+                        Mark as Favorite
+                      </Text>
+                    </View>
                     <Ionicons 
-                      name={isFavorite ? "heart" : "heart-outline"} 
-                      size={28} 
+                      name={isFavorite ? "checkbox" : "square-outline"} 
+                      size={24} 
                       color={isFavorite ? colors.danger : colors.textMuted} 
                     />
                   </TouchableOpacity>

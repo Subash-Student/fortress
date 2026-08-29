@@ -259,7 +259,7 @@ router.post('/preview', async (req, res) => {
 });
 
 // Get links (filtered by hidden status)
-router.get('/', async (req, res) => {
+router.get('/', auth, async (req, res) => {
   try {
     const isHidden = req.query.hidden === 'true';
     const links = await Link.find({ userId: req.userId, isHidden }).sort({ createdAt: -1 });
@@ -419,7 +419,7 @@ router.put('/:id', auth, async (req, res) => {
 });
 
 // Delete link
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', auth, async (req, res) => {
   const { id } = req.params;
   try {
     const deleted = await Link.findOneAndDelete({ _id: id, userId: req.userId });
