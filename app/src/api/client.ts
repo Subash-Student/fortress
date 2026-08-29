@@ -1,12 +1,12 @@
 import axios from 'axios';
 import * as SecureStore from 'expo-secure-store';
 
-// const BASE_URL = "http://192.168.1.3:3000";
+// const BASE_URL = "http://192.168.1.7:3000";
 const BASE_URL = "https://fortress-peach.vercel.app";
 
 const client = axios.create({
   baseURL: BASE_URL,
-  timeout: 10000,
+  timeout: 15000,
 });
 
 client.interceptors.request.use(async (config) => {
@@ -68,10 +68,12 @@ export const vaultApi = {
 export const linksApi = {
   getLinks: (hidden: boolean = false) => client.get('/links', { params: { hidden: hidden ? 'true' : 'false' } }),
   getUserTags: () => client.get('/links/user-tags'),
-  previewLink: (url: string) => client.post('/links/preview', { url }),
+  previewLink: (url: string, availableTags?: string[]) => client.post('/links/preview', { url, availableTags }),
   saveLink: (data: any) => client.post('/links', data),
   updateLink: (id: string, data: any) => client.put(`/links/${id}`, data),
   toggleFavorite: (id: string, isFavorite: boolean) => client.put(`/links/${id}/favorite`, { isFavorite }),
   toggleHide: (id: string, isHidden: boolean) => client.put(`/links/${id}/hide`, { isHidden }),
   deleteLink: (id: string) => client.delete(`/links/${id}`),
+  bulkTagMigration: (links: { id: string, title: string }[]) => client.post('/links/bulk-tag-migration', { links }),
+  bulkUpdateLinks: (updates: any[], allTags: string[]) => client.put('/links/bulk-update', { updates, allTags }),
 };

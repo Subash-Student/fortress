@@ -1,10 +1,5 @@
 const mongoose = require('mongoose');
 
-const EncryptedFieldSchema = new mongoose.Schema({
-  ciphertext: { type: String, required: true },
-  iv: { type: String, required: true },
-}, { _id: false });
-
 const linkSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -12,16 +7,17 @@ const linkSchema = new mongoose.Schema({
     required: true,
   },
   url: {
-    type: EncryptedFieldSchema,
+    type: mongoose.Schema.Types.Mixed,
     required: true,
   },
   title: {
-    type: EncryptedFieldSchema,
+    type: mongoose.Schema.Types.Mixed,
     required: true,
   },
   thumbnail: {
-    type: EncryptedFieldSchema,
+    type: mongoose.Schema.Types.Mixed,
     required: false,
+    default: null,
   },
   tags: {
     type: [String],
@@ -34,6 +30,11 @@ const linkSchema = new mongoose.Schema({
   isHidden: {
     type: Boolean,
     default: false,
+  },
+  status: {
+    type: String,
+    enum: ['ready', 'processing', 'failed'],
+    default: 'ready',
   },
 }, { timestamps: true });
 

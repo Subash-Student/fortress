@@ -10,8 +10,9 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useThemeStore } from '../src/store/themeStore';
 import { useAuthStore } from '../src/store/authStore';
-import { encrypt } from '../src/crypto/encryption';
+import { encrypt, decrypt } from '../src/crypto/encryption';
 import * as LocalAuthentication from 'expo-local-authentication';
+import * as Clipboard from 'expo-clipboard';
 import HeaderBar from '../src/components/HeaderBar';
 import EmptyState from '../src/components/EmptyState';
 import { linksApi, authApi } from '../src/api/client';
@@ -57,6 +58,7 @@ export default function LinksScreen() {
   // Tag Filter & Management State
   const [selectedFilterTags, setSelectedFilterTags] = useState<string[]>([]);
   const [isFilterModalVisible, setIsFilterModalVisible] = useState(false);
+  const [tagFilterSearch, setTagFilterSearch] = useState('');
 
   // Link Modal Tags State
   const [selectedModalTags, setSelectedModalTags] = useState<string[]>([]);
@@ -75,9 +77,14 @@ export default function LinksScreen() {
   const [customTitle, setCustomTitle] = useState('');
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [previewData, setPreviewData] = useState<{title: string, thumbnail: string} | null>(null);
+  const [isProcessingSave, setIsProcessingSave] = useState(false);
   const [isFavorite, setIsFavorite] = useState(false);
   const [isHidden, setIsHidden] = useState(false);
   const [editingLink, setEditingLink] = useState<LinkItem | null>(null);
+
+  // Migration State
+  const [isMigratingTags, setIsMigratingTags] = useState(false);
+  const [migrationStatus, setMigrationStatus] = useState('');
 
   // Keyboard height tracking for Android with smooth LayoutAnimation
   const [keyboardHeight, setKeyboardHeight] = useState(0);
@@ -103,32 +110,157 @@ export default function LinksScreen() {
     await Promise.all([refetchLinks(), refetchTags()]);
   };
 
-  // Debounce for URL preview
+  const autoSelectTagsFromTitle = (titleText: string) => {
+    if (!titleText || !Array.isArray(availableTags) || availableTags.length === 0) return;
+    const lowerTitle = titleText.toLowerCase();
+    
+    // Auto-match tags from availableTags in titleText
+    const matched = availableTags.filter((tag) => {
+      const clean = tag.trim().toLowerCase();
+      if (!clean) return false;
+      const escaped = clean.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const regex = new RegExp(`\\b${escaped}\\b`, 'i');
+      return regex.test(lowerTitle) || lowerTitle.includes(clean);
+    });
+
+    if (matched.length > 0) {
+      setSelectedModalTags((prev) => {
+        const set = new Set([...prev, ...matched]);
+        return Array.from(set);
+      });
+    }
+  };
+
+  const handleTitleChange = (text: string) => {
+    setCustomTitle(text);
+    autoSelectTagsFromTitle(text);
+  };
+
+  const fetchPreviewData = async (url: string) => {
+    setIsPreviewLoading(true);
+    try {
+      const res = await linksApi.previewLink(url, availableTags);
+      const data = res.data;
+      setPreviewData(data);
+      if (data.title) {
+        setCustomTitle(data.title);
+        autoSelectTagsFromTitle(data.title);
+      }
+      if (data.suggestedTags && Array.isArray(data.suggestedTags)) {
+        setSelectedModalTags((prev) => {
+          const set = new Set([...prev, ...data.suggestedTags]);
+          return Array.from(set);
+        });
+      }
+      return data;
+    } catch (err) {
+      console.log('Preview failed', err);
+      setPreviewData({ title: 'Unknown Link', thumbnail: '' });
+      return null;
+    } finally {
+      setIsPreviewLoading(false);
+    }
+  };
+
+  // Debounce for URL preview (faster 400ms response)
   useEffect(() => {
-    if (!newUrl.startsWith('http')) {
+    const trimmed = newUrl.trim();
+    if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
       setPreviewData(null);
       return;
     }
 
-    const timer = setTimeout(async () => {
-      setIsPreviewLoading(true);
-      try {
-        const res = await linksApi.previewLink(newUrl);
-        setPreviewData(res.data);
-        if (res.data.title) {
-          setCustomTitle(res.data.title);
-        }
-      } catch (err) {
-        console.log('Preview failed', err);
-        setPreviewData({ title: 'Unknown Link', thumbnail: '' });
-        setCustomTitle('Unknown Link');
-      } finally {
-        setIsPreviewLoading(false);
-      }
-    }, 800);
+    const timer = setTimeout(() => {
+      fetchPreviewData(trimmed);
+    }, 400);
 
     return () => clearTimeout(timer);
-  }, [newUrl]);
+  }, [newUrl, availableTags]);
+
+  const runTagMigration = async () => {
+    if (!vaultKey) {
+      Alert.alert('Security Error', 'Please unlock your vault first.');
+      return;
+    }
+    
+    Alert.alert(
+      'AI Tag Migration',
+      'This will fetch all your links, decrypt them locally, send the titles to Gemini to generate tags, and re-encrypt them. This may take a moment. Continue?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'Start', 
+          style: 'default',
+          onPress: async () => {
+            setIsMigratingTags(true);
+            setMigrationStatus('Fetching links...');
+            try {
+              // 1. Fetch all links
+              const resFalse = await linksApi.getLinks(false);
+              const resTrue = await linksApi.getLinks(true);
+              const allRawLinks = [...(resFalse.data || []), ...(resTrue.data || [])];
+              
+              if (allRawLinks.length === 0) {
+                Alert.alert('No Links', 'You have no links to migrate.');
+                setIsMigratingTags(false);
+                return;
+              }
+
+              setMigrationStatus('Decrypting titles...');
+              const decryptedTitles = allRawLinks.map(item => {
+                const title = item.title?.ciphertext ? decrypt(item.title.ciphertext, item.title.iv, vaultKey) : item.title;
+                return { id: item._id, title };
+              });
+
+              setMigrationStatus('Vector matching tags...');
+              const bulkRes = await linksApi.bulkTagMigration(decryptedTitles);
+              const mapping = bulkRes.data?.mapping || {};
+              const resNewTags = bulkRes.data?.newTags || availableTags;
+
+              setMigrationStatus('Re-encrypting and saving...');
+              const updates = allRawLinks.map(item => {
+                const plainTitle = item.title?.ciphertext ? decrypt(item.title.ciphertext, item.title.iv, vaultKey) : item.title;
+                const plainUrl = item.url?.ciphertext ? decrypt(item.url.ciphertext, item.url.iv, vaultKey) : item.url;
+                const plainThumbnail = item.thumbnail?.ciphertext ? decrypt(item.thumbnail.ciphertext, item.thumbnail.iv, vaultKey) : item.thumbnail;
+                
+                const suggestedTags = mapping[item._id] || [];
+                const finalTags = [...new Set([...(item.tags || []), ...suggestedTags])];
+
+                return {
+                  id: item._id,
+                  title: encrypt(plainTitle, vaultKey),
+                  url: encrypt(plainUrl, vaultKey),
+                  thumbnail: encrypt(plainThumbnail, vaultKey),
+                  tags: finalTags,
+                  isFavorite: item.isFavorite,
+                  isHidden: item.isHidden,
+                };
+              });
+
+              const globalTagsSet = new Set<string>();
+              if (Array.isArray(resNewTags)) {
+                resNewTags.forEach((t: string) => globalTagsSet.add(t));
+              }
+              if (Array.isArray(availableTags)) {
+                availableTags.forEach((t: string) => globalTagsSet.add(t));
+              }
+
+              await linksApi.bulkUpdateLinks(updates, Array.from(globalTagsSet));
+              
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              Alert.alert('Success', 'Tags have been successfully migrated!');
+              handleRefresh();
+            } catch (err) {
+              console.error('Migration failed:', err);
+              Alert.alert('Migration Failed', 'Something went wrong during the migration.');
+            } finally {
+              setIsMigratingTags(false);
+            }
+          }
+        }
+      ]
+    );
+  };
 
   const handleOpenModal = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -185,49 +317,55 @@ export default function LinksScreen() {
   };
 
   const handleSave = async () => {
-    if (!newUrl || !customTitle) {
-      Alert.alert('Missing info', 'Please enter a valid URL and title.');
+    if (!newUrl) {
+      Alert.alert('Missing info', 'Please enter a valid URL.');
       return;
     }
+
     if (!vaultKey) {
       Alert.alert('Security Error', 'Encryption key not found. Please re-authenticate.');
       return;
     }
 
+    const inputUrl = newUrl.trim();
+    const finalTitle = customTitle.trim();
+    const finalThumbnail = previewData?.thumbnail || '';
+    const finalTags = selectedModalTags;
+
+    // Instant Modal Dismissal (< 50ms UX)
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    handleCloseModal();
+
     try {
-      const encryptedUrl = encrypt(newUrl, vaultKey);
-      const encryptedTitle = encrypt(customTitle, vaultKey);
-      const encryptedThumbnail = encrypt(previewData?.thumbnail || '', vaultKey);
+      const encryptedUrl = encrypt(inputUrl, vaultKey);
+      const encryptedTitle = finalTitle ? encrypt(finalTitle, vaultKey) : null;
+      const encryptedThumbnail = finalThumbnail ? encrypt(finalThumbnail, vaultKey) : null;
 
       if (editingLink) {
-        // Update existing link
         await updateLinkMutation({
           id: editingLink._id,
           data: {
             url: encryptedUrl,
-            title: encryptedTitle,
+            title: encryptedTitle || encrypt(editingLink.title, vaultKey),
             thumbnail: encryptedThumbnail,
-            tags: selectedModalTags,
+            tags: finalTags,
             isFavorite,
             isHidden,
           },
         });
       } else {
-        // Create new link
         await saveLinkMutation({
           url: encryptedUrl,
+          rawUrl: inputUrl,
           title: encryptedTitle,
           thumbnail: encryptedThumbnail,
-          tags: selectedModalTags,
+          tags: finalTags,
           isFavorite,
           isHidden,
         });
       }
-
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      handleCloseModal();
     } catch (err) {
-      Alert.alert('Error', editingLink ? 'Failed to update link' : 'Failed to save link');
+      console.error('Failed to save link:', err);
     }
   };
 
@@ -350,6 +488,32 @@ export default function LinksScreen() {
       year: 'numeric'
     });
 
+    const isProcessing = item.status === 'processing' || item.title === 'Loading preview...';
+
+    if (isProcessing) {
+      return (
+        <View className="mb-6 rounded-2xl border overflow-hidden" style={{ backgroundColor: colors.surface, borderColor: colors.border }}>
+          <View className="w-full h-44 items-center justify-center relative" style={{ backgroundColor: colors.surfaceHigh }}>
+            <ActivityIndicator size="small" color={colors.accent} />
+            <View className="flex-row items-center mt-3 px-3 py-1 rounded-full border" style={{ backgroundColor: colors.accentDim, borderColor: colors.accent }}>
+              <Ionicons name="sparkles" size={13} color={colors.accent} />
+              <Text className="text-xs font-semibold ml-1.5" style={{ color: colors.accent }}>
+                Auto-tagging & fetching preview...
+              </Text>
+            </View>
+          </View>
+          <View className="p-3">
+            <Text className="text-sm font-semibold" style={{ color: colors.text }} numberOfLines={1}>
+              {domain}
+            </Text>
+            <Text className="text-xs mt-1" style={{ color: colors.textMuted }} numberOfLines={1}>
+              {item.url}
+            </Text>
+          </View>
+        </View>
+      );
+    }
+
     return (
       <View className="mb-6" style={{ backgroundColor: colors.bg }}>
         <TouchableOpacity 
@@ -359,7 +523,7 @@ export default function LinksScreen() {
           <Image 
             source={{ uri: item.thumbnail || YOUTUBE_PLACEHOLDER }}
             className="w-full h-56 rounded-xl"
-            resizeMode="contain"
+            resizeMode="cover"
             style={{ backgroundColor: colors.surfaceHigh }}
           />
           <View className="flex-row justify-between items-start mt-3 px-2">
@@ -378,28 +542,6 @@ export default function LinksScreen() {
               >
                 {domain} • {formattedDate}
               </Text>
-
-              {/* Link Tags Horizontal Scroll */}
-              {item.tags && item.tags.length > 0 && (
-                <ScrollView 
-                  horizontal 
-                  showsHorizontalScrollIndicator={false} 
-                  className="mt-2" 
-                  contentContainerStyle={{ gap: 6 }}
-                >
-                  {item.tags.map((tag, idx) => (
-                    <View 
-                      key={idx} 
-                      className="px-2.5 py-0.5 rounded-full border flex-row items-center" 
-                      style={{ backgroundColor: colors.surfaceHigh, borderColor: colors.border }}
-                    >
-                      <Text className="text-xs font-semibold" style={{ color: colors.accent }}>
-                        #{tag}
-                      </Text>
-                    </View>
-                  ))}
-                </ScrollView>
-              )}
             </View>
             
             <View className="flex-row items-center space-x-2">
@@ -426,6 +568,15 @@ export default function LinksScreen() {
                 />
               </TouchableOpacity>
               <TouchableOpacity
+                onPress={async () => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  await Clipboard.setStringAsync(item.url);
+                }}
+                className="p-2"
+              >
+                <Ionicons name="copy-outline" size={20} color={colors.textMuted} />
+              </TouchableOpacity>
+              <TouchableOpacity
                 onPress={() => handleOpenEditModal(item)}
                 className="p-2"
               >
@@ -439,6 +590,46 @@ export default function LinksScreen() {
               </TouchableOpacity>
             </View>
           </View>
+
+          {/* Full-width Link Tags Horizontal Scroll */}
+          {item.tags && item.tags.length > 0 && (
+            <ScrollView 
+              horizontal 
+              showsHorizontalScrollIndicator={false} 
+              className="mt-2.5 px-2" 
+              contentContainerStyle={{ gap: 8, paddingRight: 16 }}
+            >
+              {item.tags.map((tag, idx) => {
+                const isTagActive = selectedFilterTags.includes(tag);
+                return (
+                  <TouchableOpacity
+                    key={idx}
+                    activeOpacity={0.7}
+                    onPress={() => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      if (isTagActive) {
+                        setSelectedFilterTags(selectedFilterTags.filter(t => t !== tag));
+                      } else {
+                        setSelectedFilterTags([...selectedFilterTags, tag]);
+                      }
+                    }}
+                    className="px-3 py-1 rounded-full border flex-row items-center" 
+                    style={{ 
+                      backgroundColor: isTagActive ? colors.accent : colors.surfaceHigh, 
+                      borderColor: isTagActive ? colors.accent : colors.border 
+                    }}
+                  >
+                    <Text 
+                      className="text-xs font-semibold" 
+                      style={{ color: isTagActive ? '#FFFFFF' : colors.accent }}
+                    >
+                      #{tag}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          )}
         </TouchableOpacity>
       </View>
     );
@@ -464,7 +655,21 @@ export default function LinksScreen() {
   return (
     <SafeAreaView className="flex-1" style={{ backgroundColor: colors.bg }}>
       <View className="flex-1 px-4">
-        <HeaderBar title="Links" logoUri={LINKS_LOGO} onTitleLongPress={triggerHiddenModeAuth} />
+        <HeaderBar 
+          title="Links" 
+          logoUri={LINKS_LOGO} 
+          onTitleLongPress={triggerHiddenModeAuth} 
+          rightAction={
+            <TouchableOpacity
+              className="w-9 h-9 rounded-lg border items-center justify-center mr-1"
+              style={{ backgroundColor: colors.surface, borderColor: colors.border }}
+              onPress={runTagMigration}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="color-wand" size={20} color={colors.accent} />
+            </TouchableOpacity>
+          }
+        />
 
         {/* Search and Favorite / Tag Filter Bar */}
         <View className="flex-row items-center my-4">
@@ -540,6 +745,46 @@ export default function LinksScreen() {
             )}
           </TouchableOpacity>
         </View>
+
+        {/* Active Tag Filter Pills Bar */}
+        {selectedFilterTags.length > 0 && (
+          <View className="mb-3">
+            <ScrollView 
+              horizontal 
+              showsHorizontalScrollIndicator={false} 
+              contentContainerStyle={{ gap: 8, alignItems: 'center' }}
+            >
+              {selectedFilterTags.map((tag) => (
+                <TouchableOpacity
+                  key={tag}
+                  activeOpacity={0.7}
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    setSelectedFilterTags(selectedFilterTags.filter(t => t !== tag));
+                  }}
+                  className="px-3 py-1.5 rounded-full flex-row items-center border"
+                  style={{ backgroundColor: colors.accentDim, borderColor: colors.accent }}
+                >
+                  <Text className="text-xs font-semibold mr-1.5" style={{ color: colors.accent }}>
+                    #{tag}
+                  </Text>
+                  <Ionicons name="close" size={14} color={colors.accent} />
+                </TouchableOpacity>
+              ))}
+              <TouchableOpacity
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  setSelectedFilterTags([]);
+                }}
+                className="px-2.5 py-1"
+              >
+                <Text className="text-xs font-bold" style={{ color: colors.danger }}>
+                  Clear All
+                </Text>
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        )}
 
         {/* Private Mode Banner */}
         {showHidden && (
@@ -684,27 +929,37 @@ export default function LinksScreen() {
                     />
                   </View>
 
-                  {/* Preview Section - Shows Thumbnail Only */}
+                  {/* Preview Section */}
                   {isPreviewLoading && (
-                    <View className="py-6 items-center">
-                      <ActivityIndicator color={colors.accent} />
-                      <Text className="mt-2 text-sm" style={{ color: colors.textMuted }}>Fetching preview...</Text>
+                    <View 
+                      className="w-full h-48 rounded-2xl items-center justify-center mb-4 border" 
+                      style={{ backgroundColor: colors.surfaceHigh, borderColor: colors.border }}
+                    >
+                      <ActivityIndicator size="large" color={colors.accent} />
+                      <Text className="mt-3 text-xs font-semibold tracking-wide" style={{ color: colors.textMuted }}>
+                        ANALYZING LINK & FETCHING PREVIEW...
+                      </Text>
                     </View>
                   )}
 
                   {!isPreviewLoading && previewData && (
-                    <View className="mb-4 rounded-xl overflow-hidden relative" style={{ backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border }}>
+                    <View className="mb-4 rounded-2xl overflow-hidden relative border" style={{ backgroundColor: colors.surfaceHigh, borderColor: colors.border }}>
                       {previewData?.thumbnail ? (
-                        <Image source={{ uri: previewData.thumbnail }} className="w-full h-48" resizeMode="contain" style={{ backgroundColor: colors.surfaceHigh }} />
+                        <Image 
+                          source={{ uri: previewData.thumbnail }} 
+                          className="w-full h-48" 
+                          resizeMode="cover" 
+                        />
                       ) : (
-                        <View className="w-full h-48 items-center justify-center" style={{ backgroundColor: colors.surfaceHigh }}>
-                          <Ionicons name="image-outline" size={32} color={colors.textDim} />
+                        <View className="w-full h-48 items-center justify-center">
+                          <Ionicons name="image-outline" size={36} color={colors.textDim} />
+                          <Text className="mt-2 text-xs" style={{ color: colors.textDim }}>No preview image available</Text>
                         </View>
                       )}
                       {/* Eye toggle button absolute overlay */}
                       <TouchableOpacity
-                        className="absolute top-3 left-3 w-10 h-10 rounded-full justify-center items-center"
-                        style={{ backgroundColor: 'rgba(0,0,0,0.6)' }}
+                        className="absolute top-3 left-3 w-10 h-10 rounded-full justify-center items-center shadow-md"
+                        style={{ backgroundColor: 'rgba(0,0,0,0.65)' }}
                         onPress={() => {
                           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                           setIsHidden(!isHidden);
@@ -721,26 +976,24 @@ export default function LinksScreen() {
                   )}
 
                   {/* Separate Input for Title */}
-                  {previewData && (
-                    <View className="mb-4">
-                      <Text className="text-sm font-semibold mb-1 ml-1" style={{ color: colors.textMuted }}>
-                        Title
-                      </Text>
-                      <View 
-                        className="px-4 py-3 rounded-xl border flex-row items-center"
-                        style={{ backgroundColor: colors.bg, borderColor: colors.border }}
-                      >
-                        <TextInput
-                          className="flex-1 text-base"
-                          style={{ color: colors.text }}
-                          placeholder="Enter link title..."
-                          placeholderTextColor={colors.textDim}
-                          value={customTitle}
-                          onChangeText={setCustomTitle}
-                        />
-                      </View>
+                  <View className="mb-4">
+                    <Text className="text-sm font-semibold mb-1 ml-1" style={{ color: colors.textMuted }}>
+                      Title
+                    </Text>
+                    <View 
+                      className="px-4 py-3 rounded-xl border flex-row items-center"
+                      style={{ backgroundColor: colors.bg, borderColor: colors.border }}
+                    >
+                      <TextInput
+                        className="flex-1 text-base"
+                        style={{ color: colors.text }}
+                        placeholder="Enter link title..."
+                        placeholderTextColor={colors.textDim}
+                        value={customTitle}
+                        onChangeText={handleTitleChange}
+                      />
                     </View>
-                  )}
+                  </View>
 
                   {/* Tags Input Section */}
                   <View className="mb-4">
@@ -842,16 +1095,16 @@ export default function LinksScreen() {
                   {/* Save Button */}
                   <TouchableOpacity
                     className="w-full py-4 rounded-2xl items-center justify-center flex-row mb-4"
-                    style={{ backgroundColor: (newUrl && customTitle) ? colors.accent : colors.surfaceHigh }}
+                    style={{ backgroundColor: newUrl ? colors.accent : colors.surfaceHigh }}
                     onPress={handleSave}
-                    disabled={!newUrl || !customTitle || isSaving}
+                    disabled={!newUrl || isSaving || isProcessingSave}
                   >
-                    {isSaving ? (
+                    {isSaving || isProcessingSave ? (
                       <ActivityIndicator color="#FFFFFF" />
                     ) : (
                       <>
-                        <Ionicons name="checkmark" size={20} color={(newUrl && customTitle) ? '#FFFFFF' : colors.textMuted} style={{ marginRight: 6 }} />
-                        <Text className="text-base font-semibold" style={{ color: (newUrl && customTitle) ? '#FFFFFF' : colors.textMuted }}>
+                        <Ionicons name="checkmark" size={20} color={newUrl ? '#FFFFFF' : colors.textMuted} style={{ marginRight: 6 }} />
+                        <Text className="text-base font-semibold" style={{ color: newUrl ? '#FFFFFF' : colors.textMuted }}>
                           {editingLink ? 'Update Link' : 'Save Link'}
                         </Text>
                       </>
@@ -991,6 +1244,17 @@ export default function LinksScreen() {
         </View>
       </Modal>
 
+      {/* Migration Loading Overlay */}
+      <Modal visible={isMigratingTags} transparent animationType="fade">
+        <View className="flex-1 justify-center items-center px-6" style={{ backgroundColor: 'rgba(0,0,0,0.8)' }}>
+          <View className="p-6 rounded-3xl items-center w-full max-w-sm shadow-xl" style={{ backgroundColor: colors.surface }}>
+            <ActivityIndicator size="large" color={colors.accent} className="mb-4" />
+            <Text className="text-lg font-bold mb-2 text-center" style={{ color: colors.text }}>AI Tag Migration</Text>
+            <Text className="text-sm text-center" style={{ color: colors.textMuted }}>{migrationStatus}</Text>
+          </View>
+        </View>
+      </Modal>
+
       {/* Tag Filter Bottom Sheet Modal */}
       <Modal
         visible={isFilterModalVisible}
@@ -1042,6 +1306,29 @@ export default function LinksScreen() {
                 </View>
               </View>
 
+              {/* Search Bar inside Tag Filter Modal */}
+              <View 
+                className="flex-row items-center h-11 px-3 rounded-xl border mb-3"
+                style={{ backgroundColor: colors.bg, borderColor: colors.border }}
+              >
+                <Ionicons name="search" size={18} color={colors.textMuted} />
+                <TextInput
+                  className="flex-1 ml-2 text-sm"
+                  style={{ color: colors.text }}
+                  placeholder="Search tags..."
+                  placeholderTextColor={colors.textDim}
+                  value={tagFilterSearch}
+                  onChangeText={setTagFilterSearch}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                {tagFilterSearch.length > 0 && (
+                  <TouchableOpacity onPress={() => setTagFilterSearch('')} className="p-1">
+                    <Ionicons name="close-circle" size={18} color={colors.textMuted} />
+                  </TouchableOpacity>
+                )}
+              </View>
+
               {/* Tags Multi-select Grid */}
               <ScrollView showsVerticalScrollIndicator={false} className="py-2 max-h-[350px]">
                 {availableTags.length === 0 ? (
@@ -1051,40 +1338,49 @@ export default function LinksScreen() {
                       No saved tags yet. Add tags when creating or editing links!
                     </Text>
                   </View>
+                ) : availableTags.filter(t => t.toLowerCase().includes(tagFilterSearch.toLowerCase())).length === 0 ? (
+                  <View className="py-8 items-center">
+                    <Ionicons name="search-outline" size={32} color={colors.textDim} />
+                    <Text className="text-sm text-center mt-2" style={{ color: colors.textMuted }}>
+                      No tags match "{tagFilterSearch}"
+                    </Text>
+                  </View>
                 ) : (
                   <View className="flex-row flex-wrap" style={{ gap: 10 }}>
-                    {availableTags.map((tag) => {
-                      const isSelected = selectedFilterTags.includes(tag);
-                      return (
-                        <TouchableOpacity
-                          key={tag}
-                          className="px-4 py-2.5 rounded-full border flex-row items-center"
-                          style={{
-                            backgroundColor: isSelected ? colors.accent : colors.bg,
-                            borderColor: isSelected ? colors.accent : colors.border,
-                          }}
-                          onPress={() => {
-                            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                            if (isSelected) {
-                              setSelectedFilterTags(selectedFilterTags.filter(t => t !== tag));
-                            } else {
-                              setSelectedFilterTags([...selectedFilterTags, tag]);
-                            }
-                          }}
-                          activeOpacity={0.7}
-                        >
-                          <Text 
-                            className="text-sm font-semibold" 
-                            style={{ color: isSelected ? '#FFFFFF' : colors.text }}
+                    {availableTags
+                      .filter(t => t.toLowerCase().includes(tagFilterSearch.toLowerCase()))
+                      .map((tag) => {
+                        const isSelected = selectedFilterTags.includes(tag);
+                        return (
+                          <TouchableOpacity
+                            key={tag}
+                            className="px-4 py-2.5 rounded-full border flex-row items-center"
+                            style={{
+                              backgroundColor: isSelected ? colors.accent : colors.bg,
+                              borderColor: isSelected ? colors.accent : colors.border,
+                            }}
+                            onPress={() => {
+                              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                              if (isSelected) {
+                                setSelectedFilterTags(selectedFilterTags.filter(t => t !== tag));
+                              } else {
+                                setSelectedFilterTags([...selectedFilterTags, tag]);
+                              }
+                            }}
+                            activeOpacity={0.7}
                           >
-                            #{tag}
-                          </Text>
-                          {isSelected && (
-                            <Ionicons name="checkmark-circle" size={16} color="#FFFFFF" style={{ marginLeft: 6 }} />
-                          )}
-                        </TouchableOpacity>
-                      );
-                    })}
+                            <Text 
+                              className="text-sm font-semibold" 
+                              style={{ color: isSelected ? '#FFFFFF' : colors.text }}
+                            >
+                              #{tag}
+                            </Text>
+                            {isSelected && (
+                              <Ionicons name="checkmark-circle" size={16} color="#FFFFFF" style={{ marginLeft: 6 }} />
+                            )}
+                          </TouchableOpacity>
+                        );
+                      })}
                   </View>
                 )}
               </ScrollView>

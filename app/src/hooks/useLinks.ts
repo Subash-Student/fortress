@@ -12,6 +12,7 @@ export interface LinkItem {
   tags?: string[];
   isFavorite: boolean;
   isHidden: boolean;
+  status?: 'ready' | 'processing' | 'failed';
   createdAt: string;
 }
 
@@ -74,6 +75,7 @@ export function useLinksMutations() {
   const saveMutation = useMutation({
     mutationFn: (data: {
       url: any;
+      rawUrl?: string;
       title: any;
       thumbnail: any;
       tags: string[];
@@ -82,6 +84,18 @@ export function useLinksMutations() {
     }) => linksApi.saveLink(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.links.all });
+      queryClient.invalidateQueries({ queryKey: queryKeys.links.tags() });
+
+      // Background worker auto-refresh stages
+      setTimeout(() => {
+        queryClient.invalidateQueries({ queryKey: queryKeys.links.all });
+        queryClient.invalidateQueries({ queryKey: queryKeys.links.tags() });
+      }, 2500);
+
+      setTimeout(() => {
+        queryClient.invalidateQueries({ queryKey: queryKeys.links.all });
+        queryClient.invalidateQueries({ queryKey: queryKeys.links.tags() });
+      }, 5000);
     },
   });
 

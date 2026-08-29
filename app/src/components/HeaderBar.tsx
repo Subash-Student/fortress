@@ -9,9 +9,10 @@ interface HeaderBarProps {
   logoUri?: ImageSourcePropType | string;
   showBackButton?: boolean;
   onTitleLongPress?: () => void;
+  rightAction?: React.ReactNode;
 }
 
-export default function HeaderBar({ title, logoUri, showBackButton = true, onTitleLongPress }: HeaderBarProps) {
+export default function HeaderBar({ title, logoUri, showBackButton = true, onTitleLongPress, rightAction }: HeaderBarProps) {
   const { colors, fonts, themeMode, toggleTheme } = useThemeStore();
 
   const renderLogo = () => {
@@ -51,18 +52,21 @@ export default function HeaderBar({ title, logoUri, showBackButton = true, onTit
         </View>
       </TouchableOpacity>
 
-      <TouchableOpacity 
-        className="w-9 h-9 rounded-lg border items-center justify-center" 
-        style={{ backgroundColor: colors.surface, borderColor: colors.border }}
-        onPress={toggleTheme} 
-        activeOpacity={0.7}
-      >
-        <Ionicons 
-          name={themeMode === 'dark' ? 'sunny' : 'moon'} 
-          size={20} 
-          color={colors.text} 
-        />
-      </TouchableOpacity>
+      <View className="flex-row items-center gap-2">
+        {rightAction}
+        <TouchableOpacity 
+          className="w-9 h-9 rounded-lg border items-center justify-center" 
+          style={{ backgroundColor: colors.surface, borderColor: colors.border }}
+          onPress={toggleTheme} 
+          activeOpacity={0.7}
+        >
+          <Ionicons 
+            name={themeMode === 'dark' ? 'sunny' : 'moon'} 
+            size={20} 
+            color={colors.text} 
+          />
+        </TouchableOpacity>
+      </View>
     </View>
   );
 }
